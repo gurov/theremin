@@ -1,0 +1,1382 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#05070d">
+<title>Air Theremin · Play With Motion Or Hand Tracking</title>
+<meta name="description" content="Air Theremin — a browser theremin played in mid-air: tilt your phone, or wave both hands in front of the camera. Pitch, volume and timbre follow you, with note snap, cave reverb and recording.">
+<meta name="author" content="Pavel Gurov">
+<meta name="keywords" content="air theremin, theremin, gyroscope theremin, hand tracking theremin, gesture instrument, web theremin, motion theremin, web audio, online synthesizer, browser instrument">
+<link rel="canonical" href="https://theremin.bizibah.com/">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%8E%9B%EF%B8%8F%3C/text%3E%3C/svg%3E">
+<meta property="og:type" content="website">
+<meta property="og:title" content="Air Theremin — play a theremin with motion or bare hands">
+<meta property="og:description" content="Tilt your phone, or wave both hands at the camera: spread them for volume, raise them for pitch. Note snap, cave reverb, oscilloscope and audio recording. Built with the Web Audio API.">
+<meta property="og:url" content="https://theremin.bizibah.com/">
+<meta property="og:image" content="https://theremin.bizibah.com/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="Air Theremin — play a theremin with motion or bare hands">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Air Theremin">
+<meta name="twitter:description" content="Play a theremin in mid-air: phone motion or camera hand tracking. Scales, cave reverb, recording.">
+<meta name="twitter:image" content="https://theremin.bizibah.com/og.png">
+<script type="application/ld+json">
+{"@context":"https://schema.org","@type":"WebApplication","name":"Air Theremin","url":"https://theremin.bizibah.com/","applicationCategory":"MultimediaApplication","operatingSystem":"Web browser","browserRequirements":"A gyroscope or a camera for full control; works with a mouse otherwise","description":"A browser theremin played in mid-air: tilt your phone, or wave both hands in front of the camera to control pitch, volume and timbre, with note snap, cave reverb, oscilloscope and audio recording.","isBasedOn":"https://theremin.site/","author":{"@type":"Person","name":"Pavel Gurov","email":"lucius.gu@gmail.com"},"offers":{"@type":"Offer","price":"0","priceCurrency":"USD"}}
+</script>
+<style>
+  :root{
+    --bg:#05070d; --panel:rgba(8,14,22,.9); --line:#123c44;
+    /* --vib is deliberately NOT --neon2: that pink-red means "silent / out of bounds"
+       everywhere else, and a live control must not wear the error colour */
+    --neon:#16f2e0; --neon2:#ff2a6d; --lime:#b6ff2e; --vib:#ff9ce0; --text:#d7fff9; --muted:#5f8b93;
+    --panelh:39vh;   /* control panel owns the bottom third of the screen (5 rows incl. INPUT) */
+  }
+  *{box-sizing:border-box; -webkit-tap-highlight-color:transparent;}
+  html,body{margin:0; height:100%; overflow:hidden;}
+  body{
+    background:var(--bg); color:var(--text);
+    font-family:"Courier New",ui-monospace,Menlo,Consolas,monospace;
+    text-transform:uppercase; letter-spacing:1px;
+    touch-action:none; user-select:none; -webkit-user-select:none; overscroll-behavior:none;
+  }
+  /* CRT scan-lines */
+  body::after{
+    content:""; position:fixed; inset:0; pointer-events:none; z-index:40;
+    background:repeating-linear-gradient(0deg, rgba(0,0,0,.16) 0 1px, transparent 1px 3px);
+  }
+  #stage{position:fixed; top:0; left:0; right:0; bottom:var(--panelh);
+    /* Two barely-there gradients that also hint the axes: brighter to the right =
+       louder (X=volume), brighter to the top = higher (Y=pitch). */
+    background:
+      linear-gradient(90deg, rgba(22,242,224,0) 0%, rgba(22,242,224,.055) 100%),
+      linear-gradient(0deg,  rgba(182,255,46,0) 0%, rgba(182,255,46,.05) 100%);
+  }
+  canvas{position:absolute; inset:0; width:100%; height:100%; display:block; z-index:1;}
+  /* Camera preview: mirrored webcam under the scope. Kept fairly visible — seeing
+     yourself is half of "I understand what this thing tracks"; the slight dim/blur
+     keeps the scope readable on top. */
+  #cam{position:absolute; inset:0; width:100%; height:100%; object-fit:cover;
+    transform:scaleX(-1); opacity:.5; filter:brightness(.85) contrast(1.05) saturate(.85);
+    display:none; z-index:0; pointer-events:none;}
+  #cam.on{display:block;}
+
+  /* First-run coach overlay for HANDS mode (animated gesture diagram) */
+  #coach{
+    /* covers the whole stage; the input switch now sits in the panel, below it */
+    position:fixed; left:0; right:0; top:0; bottom:var(--panelh); z-index:25;
+    display:none; flex-direction:column; align-items:center; justify-content:center;
+    gap:clamp(10px,3vh,26px); text-align:center; padding:16px;
+    background:rgba(5,7,13,.84); backdrop-filter:blur(3px);
+  }
+  #coach.on{display:flex;}
+  #coach .cstep{display:flex; flex-direction:column; align-items:center; gap:4px;}
+  #coach .hands{position:relative; width:min(78vw,300px); height:46px;}
+  #coach .hands span{
+    position:absolute; top:0; left:50%; font-size:32px; line-height:46px;
+    filter:drop-shadow(0 0 10px var(--neon));
+  }
+  #coach .sl{margin-left:-72px; animation:spreadL 2.6s ease-in-out infinite;}
+  #coach .sr{margin-left: 40px; animation:spreadR 2.6s ease-in-out infinite;}
+  #coach .ul{margin-left:-72px; animation:lift 2.6s ease-in-out infinite;}
+  #coach .ur{margin-left: 40px; animation:lift 2.6s ease-in-out infinite;}
+  /* the see-saw: the hands stay level on average (so the note holds) and only the ANGLE
+     between them changes — which is exactly what drives the vibrato */
+  #coach .wl{margin-left:-72px; animation:lift 2.2s ease-in-out infinite;}
+  #coach .wr{margin-left: 40px; animation:lift 2.2s ease-in-out infinite reverse;}
+  /* "together" = palms touching (not overlapping), "apart" = arms wide */
+  @keyframes spreadL{0%,100%{transform:translateX(38px);} 50%{transform:translateX(-34px);}}
+  @keyframes spreadR{0%,100%{transform:translateX(-38px);} 50%{transform:translateX(34px);}}
+  @keyframes lift{0%,100%{transform:translateY(11px);} 50%{transform:translateY(-11px);}}
+  #coach .clabel{font-size:clamp(11px,3.4vw,14px); letter-spacing:2px; color:var(--neon);}
+  #coach .csub{font-size:10px; letter-spacing:1px; color:var(--muted);}
+  #coach .ctap{font-size:11px; letter-spacing:2px; color:var(--neon2); animation:blink 1.6s steps(2,start) infinite;}
+
+  /* Boot screen */
+  #start{
+    position:fixed; inset:0; z-index:30; display:flex; flex-direction:column;
+    align-items:center; justify-content:center; gap:24px; text-align:center;
+    background:radial-gradient(120% 120% at 50% 30%,#0a1622 0%,#05070d 72%);
+    padding:24px;
+  }
+  #start h1{
+    font-size:clamp(24px,7vw,42px); margin:0; font-weight:700; letter-spacing:3px;
+    color:var(--neon); text-shadow:0 0 14px var(--neon);
+  }
+  #start p{color:var(--muted); max-width:460px; margin:0; line-height:1.6; font-size:13px; letter-spacing:1px;}
+  .bigbtn{
+    appearance:none; cursor:pointer; color:#05070d; font-weight:700; letter-spacing:3px;
+    font-size:18px; padding:16px 44px; border:2px solid var(--neon); border-radius:0;
+    background:var(--neon); box-shadow:0 0 26px rgba(22,242,224,.55); transition:transform .08s;
+    font-family:inherit; text-transform:uppercase;
+  }
+  .bigbtn:active{transform:translate(2px,2px);}
+  #startNote{font-size:11px; color:var(--neon2); letter-spacing:1px; max-width:420px;}
+  #credit{
+    position:absolute; bottom:calc(env(safe-area-inset-bottom,0) + 16px); left:0; right:0;
+    text-align:center; text-transform:none; font-size:11px; color:var(--muted);
+    letter-spacing:.5px; line-height:1.7; padding:0 16px;
+  }
+  #credit a{color:var(--neon); text-decoration:none;}
+  #credit b{color:var(--text); font-weight:700;}
+
+  /* HUD note readout */
+  #hud{
+    position:fixed; top:calc(env(safe-area-inset-top,0) + 14px); left:0; right:0;
+    z-index:20; display:flex; flex-direction:column; align-items:center; pointer-events:none;
+  }
+  #note{
+    font-size:clamp(38px,12vw,78px); font-weight:700; line-height:1; letter-spacing:2px;
+    color:var(--lime); text-shadow:0 0 22px rgba(182,255,46,.6);
+  }
+  #freq{font-size:13px; color:var(--neon); margin-top:6px; font-variant-numeric:tabular-nums; letter-spacing:2px;}
+  #recDot{
+    display:none; align-items:center; gap:8px; margin-top:10px; font-size:12px;
+    color:var(--neon2); font-variant-numeric:tabular-nums; letter-spacing:2px;
+  }
+  #recDot.on{display:flex;}
+  #recDot .blink{width:10px; height:10px; background:var(--neon2); box-shadow:0 0 8px var(--neon2); animation:blink 1s steps(2,start) infinite;}
+  @keyframes blink{50%{opacity:0;}}
+
+  /* Control panel */
+  #panel{
+    position:fixed; z-index:20; left:0; right:0; bottom:0; height:var(--panelh);
+    background:var(--panel); backdrop-filter:blur(10px);
+    border-top:2px solid var(--line); border-radius:0;
+    padding:12px calc(env(safe-area-inset-right,0) + 12px)
+            calc(env(safe-area-inset-bottom,0) + 12px)
+            calc(env(safe-area-inset-left,0) + 12px);
+    display:flex; flex-direction:column; justify-content:center; gap:10px; overflow-y:auto;
+    box-shadow:0 0 0 1px rgba(22,242,224,.08), 0 -6px 30px rgba(0,0,0,.6);
+  }
+  .row{display:flex; gap:8px; flex-wrap:wrap; align-items:center;}
+  .grouplabel{font-size:10px; letter-spacing:2px; color:var(--muted); width:100%; margin-bottom:-2px;}
+  .seg{display:flex; gap:6px; flex:1; min-width:0;}
+  .seg button, select, .action, .toggle{
+    font-family:inherit; text-transform:uppercase; letter-spacing:1px;
+  }
+  .seg button, select{
+    flex:1; min-width:0; appearance:none; cursor:pointer; white-space:nowrap;
+    background:rgba(22,242,224,.05); color:var(--text);
+    border:2px solid var(--line); border-radius:0; padding:11px 6px;
+    font-size:12px; font-weight:700; text-align:center; transition:.1s;
+  }
+  select{padding:11px 8px; background-image:none;}
+  .seg button.active{background:var(--neon); color:#05070d; border-color:var(--neon); box-shadow:0 0 14px rgba(22,242,224,.5);}
+  /* a toggle that a gesture has taken over: still shown, but it reads as a caption now */
+  .seg button.locked{
+    pointer-events:none; background:transparent; border-style:dashed;
+    border-color:var(--vib); color:var(--vib); box-shadow:none; font-size:11px;
+  }
+  .toggle{
+    display:flex; align-items:center; gap:9px; cursor:pointer; padding:9px 12px;
+    border:2px solid var(--line); border-radius:0; background:rgba(22,242,224,.05);
+    flex:1; justify-content:space-between; font-size:12px; font-weight:700; color:var(--text);
+  }
+  .switch{width:42px; height:22px; border-radius:0; background:#0c1a20; border:2px solid var(--line); position:relative; transition:.12s; flex:none;}
+  .switch::after{content:""; position:absolute; top:2px; left:2px; width:14px; height:14px; background:var(--muted); transition:.12s;}
+  .toggle.on{border-color:var(--neon); color:var(--neon);}
+  .toggle.on .switch{border-color:var(--neon); box-shadow:0 0 12px rgba(22,242,224,.5);}
+  .toggle.on .switch::after{left:22px; background:var(--neon);}
+  .action{
+    appearance:none; cursor:pointer; border:2px solid var(--line); border-radius:0;
+    background:rgba(22,242,224,.05); color:var(--text);
+    padding:12px 6px; font-size:11px; letter-spacing:.5px; font-weight:700; flex:1; min-width:0;
+    white-space:nowrap; transition:.1s; display:flex; align-items:center; justify-content:center; gap:5px;
+  }
+  .action:active{transform:translate(1px,1px);}
+  /* Calibrate stands out in lime so it reads as "the zeroing control", not a transport button */
+  #calibrateBtn{color:var(--lime); border-color:rgba(182,255,46,.45); background:rgba(182,255,46,.07);
+    box-shadow:0 0 12px rgba(182,255,46,.15);}
+  #recBtn.recording{background:var(--neon2); color:#0a0206; border-color:var(--neon2); box-shadow:0 0 16px rgba(255,42,109,.6);}
+
+  #hint{
+    position:fixed; z-index:20; left:0; right:0; bottom:calc(var(--panelh) + 12px);
+    text-align:center; color:var(--muted); font-size:11px; letter-spacing:1px;
+    pointer-events:none; transition:opacity .4s; padding:0 12px;
+  }
+
+  /* Input row lives at the top of the panel: in HANDS mode your arms are up in the
+     stage area, so controls must stay out of it — and on a phone the bottom third is
+     the only comfortable one-handed reach. CALIBRATE hides in HANDS, segment goes wide. */
+  #inputRow .action{flex:0 0 auto;}
+</style>
+</head>
+<body>
+
+<div id="stage">
+  <video id="cam" playsinline muted></video>
+  <canvas id="scope"></canvas>
+</div>
+
+<div id="hud">
+  <div id="note">—</div>
+  <div id="freq">0 HZ</div>
+  <div id="recDot"><span class="blink"></span><span id="recTime">0:00</span></div>
+</div>
+
+<div id="hint">TILT ↔ VOLUME · TILT ↕ PITCH · TOUCH TO PLAY · OUTSIDE FRAME = SILENCE</div>
+
+<div id="coach">
+  <div class="cstep">
+    <div class="hands"><span class="sl">✋</span><span class="sr">✋</span></div>
+    <div class="clabel">SPREAD HANDS = LOUDER</div>
+    <div class="csub">PALMS TOGETHER = SILENCE</div>
+  </div>
+  <div class="cstep">
+    <div class="hands"><span class="ul">✋</span><span class="ur">✋</span></div>
+    <div class="clabel">RAISE BOTH HANDS = HIGHER</div>
+    <div class="csub">KEEP BOTH HANDS IN VIEW</div>
+  </div>
+  <div class="cstep">
+    <div class="hands"><span class="wl">✋</span><span class="wr">✋</span></div>
+    <div class="clabel">TILT LIKE A SEE-SAW = VIBRATO</div>
+    <div class="csub">LEAN BACK = DARKER, MORE ROOM</div>
+  </div>
+  <div class="ctap">TAP TO PLAY</div>
+</div>
+
+<div id="panel">
+  <div class="row" id="inputRow">
+    <span class="grouplabel">// INPUT</span>
+    <div class="seg" id="inputSeg">
+      <button data-in="gyro" class="active">⟲ GYRO</button>
+      <button data-in="camera">◉ HANDS</button>
+    </div>
+    <button class="action" id="calibrateBtn">◎ CAL</button>
+  </div>
+
+  <div class="row">
+    <span class="grouplabel">// WAVE</span>
+    <div class="seg" id="waveSeg">
+      <button data-w="sine" class="active">∿ SINE</button>
+      <button data-w="triangle">△ TRI</button>
+      <button data-w="warm">◠ WARM</button>
+      <button data-w="reed">⊔ REED</button>
+    </div>
+  </div>
+
+  <div class="row">
+    <div class="toggle on" id="reverbToggle"><span>REVERB</span><span class="switch"></span></div>
+    <div class="toggle on" id="snapToggle"><span>NOTE SNAP</span><span class="switch"></span></div>
+  </div>
+
+  <div class="row">
+    <span class="grouplabel">// FX</span>
+    <div class="seg" id="fxSeg">
+      <button data-fx="vibrato" id="fxVib">∿ VIB</button>
+      <button data-fx="tremolo">≋ TREM</button>
+      <button data-fx="delay">⟳ ECHO</button>
+    </div>
+  </div>
+
+  <div class="row">
+    <button class="action" id="recBtn">● REC</button>
+    <button class="action" id="stopBtn">❚❚ PAUSE</button>
+  </div>
+</div>
+
+<div id="start">
+  <h1>▛ AIR·THEREMIN ▜</h1>
+  <p>Play it in mid-air, two ways. <b>GYRO</b> — tilt your phone: left-right sets volume, forward-back sets pitch, and the whole range lives inside the frame (tilt the marker outside it to cut the sound). <b>HANDS</b> — wave both hands at the camera: spread them apart for volume, raise them for pitch, lean back to soften the tone, put your palms together for silence. Hold the device steady and press START — it calibrates to your current grip.</p>
+  <button class="bigbtn" id="startBtn">▶ START</button>
+  <div id="startNote"></div>
+  <div id="credit">
+    Created by <b>Pavel Gurov</b> · <a href="mailto:lucius.gu@gmail.com">lucius.gu@gmail.com</a><br>
+    Based on <a href="https://theremin.site/" target="_blank" rel="noopener">theremin.site</a>
+  </div>
+</div>
+
+<script>
+"use strict";
+(function(){
+  // ---------- Mapping constants ----------
+  // C2..C7 = exactly 5 octaves, 60 semitones. The range used to start at A0 (27.5 Hz), but
+  // that bottom octave was a trap: even with the bass exciter below it reads as a rumble
+  // rather than a note, so players who wandered down there thought the instrument had
+  // broken. Cutting it also buys resolution — 15 fewer semitones over the same tilt.
+  const F_MIN = 65.41;          // C2 — the lowest note a phone speaker can be made to imply
+  const F_MAX = 2093.0;         // C7
+  const GAIN_MAX = 0.7;
+  const VOL_FLOOR = 0.012;      // below this -> silence
+  const TILT_VOL = 40;          // ± degrees of roll for the full volume sweep
+  // Pitch gets a wider sweep than volume on purpose: 60 semitones are spread over
+  // 2*TILT_PITCH degrees, so a narrow range makes a single degree of sensor jitter worth
+  // most of a semitone — which is exactly what the pitch "staircase" was.
+  const TILT_PITCH = 55;        // ± degrees of forward-back tilt for the full note range
+  const VOL_EXPO = 0.6;         // 0..1 response curve for the volume tilt: softens the
+                                //   twitchy center, keeps full sensitivity at the edges
+  const SMOOTH = 0.03;          // s, setTargetAtTime time-constant
+  const FRAME = 0.082;          // playfield margin (fraction of screen); marker outside -> mute
+  const VOL_DB_RANGE = 40;      // perceptual volume span (dB) from floor to full
+  // Per-waveform loudness compensation (rich waves carry more energy -> quieter multiplier)
+  // Sine is spectrally the "thinnest" (one frequency), so at equal amplitude it reads
+  // quieter than the harmonically-rich waves — give it the most gain to match loudness.
+  const WAVE_GAIN = { sine:1.25, triangle:1.0, warm:0.78, reed:0.82 };
+  // Bass loudness compensation: the ear (equal-loudness) and phone speakers both roll off
+  // hard in the low end, so at equal amplitude low notes sound much quieter. Boost gain as
+  // frequency drops: +LOUD_BASS_DB at F_MIN, tapering to 0 dB at/above LOUD_REF_HZ.
+  // 12 dB, not the 15 it was while F_MIN sat at A0: the curve is anchored at F_MIN, so
+  // raising the floor to C2 steepened it. 12 dB over the shorter span reproduces the boost
+  // the low-mids were tuned with almost exactly.
+  const LOUD_REF_HZ = 600, LOUD_BASS_DB = 12;   // eased (non-linear) boost — see loudnessComp
+  const NOTE_NAMES = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
+  // Effect defaults (all toggles OFF by default)
+  const VIB_RATE = 5.2, VIB_DEPTH = 28;         // vibrato: Hz, cents of detune sweep
+  const TREM_RATE = 6.0, TREM_DEPTH = 0.35;     // tremolo: Hz, gain-modulation amplitude
+  const DELAY_TIME = 0.28, DELAY_FB = 0.38, DELAY_WET = 0.5;  // echo: s, feedback, wet mix
+  // HANDS: two palms give exactly three independent numbers, and only two were being read.
+  // Mean height is the pitch, the gap between them is the volume, and the ANGLE of the line
+  // joining them was free — see-saw the hands and the note gains vibrato. The angle is
+  // rotation-invariant with respect to the gap, so it doesn't disturb the volume. The dead
+  // zone matters: nobody holds two hands exactly level, and without it the vibrato would
+  // drift on by itself — the same failure that got finger-spread control removed.
+  const TILT_DEAD = 12, TILT_FULL = 46;   // degrees: silent below, full depth above
+  const VIB_HAND_MAX = 55;                // cents of detune at a full see-saw
+
+  // ---------- State ----------
+  let ctx, osc, volGain, tremGain, dryGain, wetGain, convolver, preDelay, wetFilter, toneFilter, mixBus, limiter, analyser, streamDest;
+  let vibLfo, vibDepth, tremLfo, tremDepth, delay, delayFb, delayWet;
+  let bassLP, bassShaper, bassHP, bassGain;      // psychoacoustic bass exciter (missing fundamental)
+  let waveTable = {};                            // wave name -> built-in type or custom PeriodicWave
+  let started = false;
+  // Explicit PAUSE, kept apart from ctx.state: the iOS auto-recovery below resumes from
+  // any non-running state, and ctx.suspend() produces exactly such a state — so without
+  // this flag the recovery would immediately undo the user's own pause.
+  let userPaused = false;
+  let touchActive = false;                // finger on screen overrides the gyroscope
+  let pitchNorm = 0.5, volNorm = 0;       // 0..1
+  let neutralGamma = 0, neutralBeta = 45; // calibration
+  let haveGyro = false;
+  let gyroRaw = null;                     // latest sensor reading, consumed at frame rate
+  let handTilt = 0;                       // 0..1 see-saw of the palms -> vibrato depth
+  let wave = 'sine', reverbOn = true, snapOn = true;   // reverb ON by default
+  let vibratoOn = false, tremoloOn = false, delayOn = false;
+  let curFreq = F_MIN, outOfBounds = false, audible = false;
+  let recorder = null, recChunks = [], recStart = 0, recTimer = null;
+  // Camera / hand-tracking input (alternative to the gyroscope)
+  let inputMode = 'gyro';                 // 'gyro' | 'camera'
+  let handLandmarker = null, camStream = null, camRAF = 0, camReady = false, lastCamTs = 0;
+  let extraMute = false;                  // hands lost in camera mode -> force silence
+  const CAM_MIRROR = true;                // front camera: mirror X so moving right = right
+  const PALM_PTS = [0,5,9,13,17];         // wrist + finger MCPs -> stable palm center
+  // "Conductor" two-hand mapping: gap between the palms = volume, their mean height =
+  // pitch. Symmetric — no left/right roles to memorize, and palms together = silence,
+  // which is why this mode needs no playfield frame. The gap is measured in hand-lengths
+  // so it doesn't drift when the player sits closer to / further from the camera.
+  // Touching palms are ~1.1 hand-lengths apart center-to-center, so SEP_MIN just above that
+  // guarantees real silence at any distance from the camera. Full volume, in contrast, is
+  // a share of the VISIBLE stage width — the frame is cropped differently on a portrait
+  // phone and a laptop, and "arms wide" has to mean the edges of what the player sees.
+  const SEP_MIN = 1.25;                   // silence threshold, in hand-lengths
+  const SEP_SPAN = 0.72;                  // full volume at this share of the stage width
+  // One hand visible: hold the note, then mute. Short, because a note that outlives the
+  // gesture by even half a second reads as lag, not as legato. The hold is a fade rather
+  // than a cliff: full level through the grace window (covers the 3-6 dropped frames that
+  // ordinary tracking glitches cost), then a ramp to silence, so a real dropout is
+  // inaudible while dropping your arms cuts the sound almost at once.
+  // A hand cannot teleport. If it was last seen well inside the frame it did NOT leave —
+  // the detector blinked (motion blur, palm turned edge-on, one hand crossing the other),
+  // so ride the gap out and nobody hears anything. Vanishing at the border is the real
+  // "I'm done" gesture and still mutes fast. One timer could never serve both.
+  const HAND_HOLD_EDGE_MS = 400;          // last seen at the frame border -> you meant it
+  const HAND_HOLD_GLITCH_MS = 1000;       // last seen mid-frame -> the tracker blinked
+  const EDGE_MARGIN = 0.14;               // share of the frame that counts as "at the border"
+  const HAND_GRACE_MS = 150;              // full level for this long before any fade starts
+  const CAM_REF_MS = 1500;                // hands gone this long -> re-centre the depth range
+  let holdFade = 1;                       // volume multiplier while riding out a lost hand
+  let camHands = [];                      // palm points {x,y,sc} of the hands in view (for the overlay)
+  let camHold = false, handLostAt = 0;    // one-hand "frozen values" state
+  let lastPalms = null, lastMeanY = 0;    // last good pair (stage px) — pitch survives a lost hand
+  let lastGhosts = null;                  // ...same pair in frame coords, for the held-on rings
+
+  // Depth axis: how far the player stands from the camera -> how "distant" the sound is.
+  // Nearby sources are bright and dry, far ones are dark and drowned in room reflections —
+  // an acoustic law everyone knows by ear, so nothing has to be learned. It steers only
+  // timbre/space, never loudness: the palm gap already owns loudness, and screen-pixel
+  // separation grows a little on its own when you step toward the camera.
+  // Hand size is read in FRAME units (not stage pixels): cover-cropping changes what you
+  // see, but not how big your hand really is in the camera's field of view. And it is read
+  // RELATIVE to the size seen when the hands first appeared, never as an absolute: apparent
+  // size depends on the lens (a phone's front camera is far wider than a webcam) and on
+  // whose hands these are, so any fixed threshold would land differently on every device.
+  // Relative to a reference, only the ratio matters — and apparent size is 1/distance,
+  // so that ratio inverts straight into "how much further away am I than when I started".
+  // Expressed as distance ratios to that reference (1.0 = where you started). The resting
+  // pose sits near the bright end on purpose: switching to HANDS must not sound duller
+  // than before, so leaning BACK is the gesture that does the work, and leaning in only
+  // tops the last bit off.
+  const PROX_NEAR_R = 0.9, PROX_FAR_R = 1.5;
+  let camRef = 0, noHandsAt = 0;            // reference hand size (0 = re-seed on next frame)
+  const TONE_NEAR_HZ = 16000;               // close up: filter wide open
+  const TONE_FAR_MULT = 2.4, TONE_FAR_MIN = 620;  // far: cutoff hugs the fundamental (note survives, sheen goes)
+  const REV_DRY = 0.75, REV_WET = 0.55;     // reverb mix with the toggle on, at arm's length
+  const PROX_WET = 0.6;                     // ...times this much extra wet at the far end
+  let camProx = 1;                          // 1 = close/bright, 0 = far/dark
+
+  // ---------- DOM ----------
+  const $ = s => document.querySelector(s);
+  const startEl=$('#start'), startBtn=$('#startBtn'), startNote=$('#startNote');
+  const noteEl=$('#note'), freqEl=$('#freq'), hintEl=$('#hint');
+  const recBtn=$('#recBtn'), recDot=$('#recDot'), recTimeEl=$('#recTime');
+  const canvas=$('#scope'), gc=canvas.getContext('2d');
+  const calBtn=$('#calibrateBtn'), fxVib=$('#fxVib');
+  const video=$('#cam');
+  function hintShow(txt){ hintEl.textContent=txt; hintEl.style.opacity='1'; }
+  const HANDS_HINT = 'HANDS · SPREAD ↔ VOLUME · RAISE ↕ PITCH · TILT = VIBRATO · LEAN BACK = DARKER · PALMS TOGETHER = SILENCE';
+
+  // ---------- Gesture coach (animated diagram over the stage) ----------
+  // Shown on the first entry into HANDS of every VISIT, not once per browser. Nobody
+  // rehearses three gestures well enough to keep them a month, and the overlay costs a tap
+  // to dismiss — cheap next to opening the site and not remembering what the hands do. It
+  // is remembered for the session, though, so flipping GYRO/HANDS doesn't replay it.
+  const coachEl=$('#coach');
+  let coachTimer=0, coachAt=0, coachSeenThisVisit=false;
+  function coachSeen(){ return coachSeenThisVisit; }
+  function showCoach(){
+    coachEl.classList.add('on'); coachAt=Date.now();
+    clearTimeout(coachTimer); coachTimer=setTimeout(hideCoach, 14000);
+    coachSeenThisVisit=true;
+  }
+  function hideCoach(){ coachEl.classList.remove('on'); clearTimeout(coachTimer); coachAt=0; }
+  coachEl.addEventListener('pointerdown', e=>{ e.preventDefault(); hideCoach(); });
+
+  // ---------- Audio graph ----------
+  function buildAudio(){
+    ctx = new (window.AudioContext||window.webkitAudioContext)();
+    // iOS may put the context into 'interrupted'/'suspended' (hard shake, focus/audio
+    // change): sound dies while requestAnimationFrame keeps the visuals moving. Try to
+    // auto-recover; a screen touch / tab refocus (below) also forces a resume.
+    ctx.onstatechange = () => { if(started && !userPaused && ctx.state!=='running') ctx.resume().catch(()=>{}); };
+    osc = ctx.createOscillator();
+    osc.frequency.value = F_MIN;
+    buildWaves();      // warm/reed custom timbres (replace raw saw/square)
+    applyWave();       // point the oscillator at the current waveform
+
+    volGain = ctx.createGain();  volGain.gain.value = 0;      // driven by volume
+    tremGain = ctx.createGain(); tremGain.gain.value = tremoloOn ? 1-TREM_DEPTH : 1;  // tremolo VCA
+    dryGain = ctx.createGain();  dryGain.gain.value = reverbOn ? REV_DRY : 1;
+    wetGain = ctx.createGain();  wetGain.gain.value = reverbOn ? REV_WET : 0;   // reverb default ON
+    // Distance filter: a sound source far away loses its highs before it loses its
+    // fundamental, so this sits BEFORE the branch split and darkens everything at once
+    // (dry, reverb send, echo). Wide open unless the depth axis is driving it.
+    toneFilter = ctx.createBiquadFilter(); toneFilter.type='lowpass';
+    toneFilter.frequency.value = TONE_NEAR_HZ; toneFilter.Q.value = 0.4;
+    // "Cave/well": long tail + pre-delay + dark low-pass on the wet signal
+    convolver = ctx.createConvolver();
+    convolver.buffer = makeImpulse(5.0, 3.0);
+    preDelay = ctx.createDelay(0.5); preDelay.delayTime.value = 0.035;
+    wetFilter = ctx.createBiquadFilter(); wetFilter.type='lowpass'; wetFilter.frequency.value=2600; wetFilter.Q.value=0.5;
+    mixBus = ctx.createGain();   mixBus.gain.value = 0.9;
+    // Master limiter: catches peaks from rich waves + reverb tails so nothing clips
+    // (protects both speakers and the recording).
+    limiter = ctx.createDynamicsCompressor();
+    limiter.threshold.value = -6; limiter.knee.value = 0; limiter.ratio.value = 20;
+    limiter.attack.value = 0.003; limiter.release.value = 0.25;
+    analyser = ctx.createAnalyser(); analyser.fftSize = 2048;
+    streamDest = ctx.createMediaStreamDestination();
+
+    // Feedback delay (echo), independent of the cave reverb
+    delay = ctx.createDelay(1.0);   delay.delayTime.value = DELAY_TIME;
+    delayFb = ctx.createGain();     delayFb.gain.value = DELAY_FB;
+    delayWet = ctx.createGain();    delayWet.gain.value = delayOn ? DELAY_WET : 0;
+
+    // Vibrato + tremolo LFOs (always running; depth gains gate them on/off)
+    vibLfo = ctx.createOscillator();  vibLfo.frequency.value = VIB_RATE;
+    vibDepth = ctx.createGain();      vibDepth.gain.value = vibratoOn ? VIB_DEPTH : 0;
+    tremLfo = ctx.createOscillator(); tremLfo.frequency.value = TREM_RATE;
+    tremDepth = ctx.createGain();     tremDepth.gain.value = tremoloOn ? TREM_DEPTH : 0;
+
+    // Psychoacoustic bass exciter (see makeBassCurve): isolate the low octaves, add
+    // harmonics via soft saturation, then drop the (phone-inaudible) fundamental. The
+    // ear reconstructs the "missing fundamental", so bass reads as present + in-tune
+    // even though a tiny speaker can't move enough air to sound the note itself.
+    bassLP = ctx.createBiquadFilter();   bassLP.type='lowpass';  bassLP.frequency.value=170; bassLP.Q.value=0.4;
+    bassShaper = ctx.createWaveShaper();  bassShaper.curve=makeBassCurve(); bassShaper.oversample='4x';
+    bassHP = ctx.createBiquadFilter();   bassHP.type='highpass'; bassHP.frequency.value=120; bassHP.Q.value=0.5;
+    bassGain = ctx.createGain();         bassGain.gain.value=0.7;
+
+    // osc -> vol -> trem -> tone -> (dry + reverb + echo + bass) -> mix -> limiter -> analyser -> out + recording
+    osc.connect(volGain);
+    volGain.connect(tremGain);
+    tremGain.connect(toneFilter);
+    toneFilter.connect(dryGain).connect(mixBus);
+    toneFilter.connect(preDelay).connect(convolver).connect(wetFilter).connect(wetGain).connect(mixBus);
+    toneFilter.connect(delay);
+    delay.connect(delayFb).connect(delay);         // feedback loop
+    delay.connect(delayWet).connect(mixBus);
+    toneFilter.connect(bassLP).connect(bassShaper).connect(bassHP).connect(bassGain).connect(mixBus);  // bass exciter
+    vibLfo.connect(vibDepth).connect(osc.detune);  // vibrato -> pitch
+    tremLfo.connect(tremDepth).connect(tremGain.gain);  // tremolo -> gain
+    mixBus.connect(limiter);
+    limiter.connect(analyser);
+    analyser.connect(ctx.destination);
+    analyser.connect(streamDest);
+
+    osc.start(); vibLfo.start(); tremLfo.start();
+  }
+
+  // Procedural impulse response: decaying noise (long cave tail)
+  // + sparse early reflections -> boomy "well" echo.
+  function makeImpulse(seconds, decay){
+    const rate=ctx.sampleRate, len=Math.floor(rate*seconds);
+    const buf=ctx.createBuffer(2,len,rate);
+    const taps=[0.013,0.027,0.043,0.061,0.089];   // early reflections, s
+    for(let ch=0; ch<2; ch++){
+      const d=buf.getChannelData(ch);
+      for(let i=0;i<len;i++){
+        d[i]=(Math.random()*2-1)*Math.pow(1-i/len, decay);
+      }
+      taps.forEach((t,k)=>{
+        const idx=Math.floor(rate*t)+ch*7;         // slight channel offset for stereo width
+        if(idx<len) d[idx]+=(k%2?-1:1)*0.6*Math.pow(0.72,k);
+      });
+    }
+    return buf;
+  }
+
+  // Soft-saturation curve for the bass exciter: tanh adds warm low-order harmonics
+  // (3rd, 5th...) rather than the harsh high-order fizz a hard clip would. 4x
+  // oversampling on the node keeps it alias-free (no digital buzz).
+  function makeBassCurve(){
+    const n=1024, c=new Float32Array(n), k=2.4;
+    for(let i=0;i<n;i++){ const x=i/(n-1)*2-1; c[i]=Math.tanh(k*x)/Math.tanh(k); }
+    return c;
+  }
+
+  // Custom timbres to replace raw saw/square (which buzz on a phone speaker because
+  // they carry the full high-harmonic series). These are band-limited PeriodicWaves
+  // whose harmonics roll off smoothly — warm and musical, and since the harmonics
+  // scale with the fundamental the tone stays even across the whole range.
+  function warmWave(){        // mellow sawtooth: all harmonics, gentle exponential rolloff
+    const N=32, real=new Float32Array(N), imag=new Float32Array(N);
+    for(let n=1;n<N;n++){ imag[n]=(1/n)*Math.exp(-n/7); }
+    return ctx.createPeriodicWave(real, imag);
+  }
+  function reedWave(){        // hollow organ/clarinet: odd harmonics only, rolled off
+    const N=32, real=new Float32Array(N), imag=new Float32Array(N);
+    for(let n=1;n<N;n+=2){ imag[n]=(1/n)*Math.exp(-n/11); }
+    return ctx.createPeriodicWave(real, imag);
+  }
+  function buildWaves(){
+    waveTable = {
+      sine:     {type:'sine'},
+      triangle: {type:'triangle'},
+      warm:     {periodic:warmWave()},
+      reed:     {periodic:reedWave()},
+    };
+  }
+  function applyWave(){
+    if(!osc) return;
+    const w=waveTable[wave];
+    if(w && w.periodic) osc.setPeriodicWave(w.periodic);
+    else osc.type=(w && w.type) || 'sine';
+  }
+
+  // ---------- Control -> sound mapping ----------
+  const clamp=(v,a,b)=>Math.min(b,Math.max(a,v));
+  // Expo curve on x∈[-1,1] -> [-1,1]: cubic blend flattens the slope near 0
+  // (center) and steepens it toward ±1 (edges). k=0 linear, k=1 pure cubic.
+  const expo=(x,k)=>{ x=clamp(x,-1,1); return (1-k)*x + k*x*x*x; };
+  // Frequency-dependent loudness boost for the low end (see LOUD_* constants).
+  function loudnessComp(f){
+    let t = clamp((Math.log2(LOUD_REF_HZ) - Math.log2(f)) /
+                  (Math.log2(LOUD_REF_HZ) - Math.log2(F_MIN)), 0, 1);   // 0 above ref, 1 at F_MIN
+    t = Math.sqrt(t);   // ease-out: the boost ramps in early so the low-mids get help too
+    return Math.pow(10, (LOUD_BASS_DB/20) * t);
+  }
+
+  function freqFromNorm(n){
+    let f = F_MIN * Math.pow(F_MAX/F_MIN, n);
+    if(snapOn) f = snapFreq(f);
+    return f;
+  }
+  function snapFreq(f){
+    const m = Math.round(69 + 12*Math.log2(f/440));   // nearest chromatic semitone
+    return 440*Math.pow(2,(m-69)/12);
+  }
+  function noteLabel(f){
+    const m=Math.round(69+12*Math.log2(f/440));
+    return NOTE_NAMES[((m%12)+12)%12]+(Math.floor(m/12)-1);
+  }
+
+  function updateAudio(){
+    if(!started) return;
+    // The frame's interior holds the FULL range: remap [FRAME,1-FRAME] -> [0,1] on both
+    // axes so the lowest/highest notes sit at the frame edges, and anything outside the
+    // frame is silent. The marker itself still moves across the whole screen (below).
+    // Exception: two-hand camera mode has NO frame — the hands bound the range themselves
+    // (palms together = silence), so its 0..1 values are used as they come.
+    const noFrame = inputMode==='camera';
+    const span = 1 - 2*FRAME;
+    const pitchIn = noFrame ? pitchNorm : clamp((pitchNorm - FRAME)/span, 0, 1);
+    const volIn   = noFrame ? volNorm   : clamp((volNorm   - FRAME)/span, 0, 1);
+    const f = freqFromNorm(pitchIn);
+    curFreq = f;
+    // marker outside the frame (either axis) -> silence; in camera mode, no hand -> silence too
+    outOfBounds = extraMute || (!noFrame &&
+      !(pitchNorm>FRAME && pitchNorm<1-FRAME && volNorm>FRAME && volNorm<1-FRAME));
+    // Perceptual (dB) volume curve + per-waveform loudness compensation.
+    let g = 0;
+    if(!outOfBounds && volIn >= VOL_FLOOR){
+      g = GAIN_MAX * Math.pow(10, (volIn - 1) * (VOL_DB_RANGE/20)) * (WAVE_GAIN[wave]||1) * loudnessComp(f);
+      g *= holdFade;      // ramps down while one hand is missing (1 everywhere else)
+    }
+    audible = g > 0;
+    // Snappy (but click-free) transitions on touch / note-snap; smooth glissando otherwise.
+    const fTc = (touchActive || snapOn) ? 0.012 : SMOOTH;
+    const gTc = touchActive ? 0.012 : SMOOTH;   // keep ramps >10ms so fast moves don't zipper/click
+    osc.frequency.setTargetAtTime(f, ctx.currentTime, fTc);
+    volGain.gain.setTargetAtTime(g, ctx.currentTime, gTc);
+    applyDepth(f);
+    // In hands mode the see-saw of the palms owns the vibrato depth and the FX button is
+    // locked out; everywhere else the button owns it (setFx restores that on the way out).
+    if(inputMode==='camera' && vibDepth)
+      vibDepth.gain.setTargetAtTime(handTilt*VIB_HAND_MAX, ctx.currentTime, 0.07);
+    noteEl.textContent = g>0 ? noteLabel(f) : '—';
+    freqEl.textContent = Math.round(f)+' HZ';
+  }
+
+  // Depth -> distance. The low-pass floor is tied to the note being played, not to a fixed
+  // frequency: a flat 620 Hz cutoff would swallow the fundamental of high notes and read as
+  // "the sound broke" rather than "the sound moved away". Only the overtones leave.
+  // Outside hands mode there is no depth to read, so prox pins to 1 (fully open, base mix).
+  function applyDepth(f){
+    if(!toneFilter) return;
+    const prox = inputMode==='camera' ? camProx : 1;
+    const far = Math.max(TONE_FAR_MIN, f*TONE_FAR_MULT);
+    const cut = Math.min(TONE_NEAR_HZ, far*Math.pow(TONE_NEAR_HZ/far, prox));
+    const now = ctx.currentTime;
+    toneFilter.frequency.setTargetAtTime(cut, now, 0.09);
+    if(reverbOn){
+      wetGain.gain.setTargetAtTime(REV_WET*(1 + PROX_WET*(1-prox)), now, 0.14);
+      dryGain.gain.setTargetAtTime(REV_DRY*(1 - 0.2*(1-prox)), now, 0.14);
+    }
+  }
+
+  // ---------- Gyroscope ----------
+  // The handler only records the reading; the audio is driven from the frame loop below.
+  // Two reasons. deviceorientation fires at whatever rate the phone feels like (and slows
+  // down under load), and one setTargetAtTime per event turns a slow sweep into
+  // glide-plateau-glide stairs. And the raw angle is quantized — some phones report close
+  // to whole degrees, which on the pitch axis is worth a good fraction of a semitone.
+  function onOrient(e){
+    if(e.gamma===null || e.beta===null) return;
+    haveGyro = true;
+    if(inputMode!=='gyro' || touchActive) return;   // camera mode / finger override the gyro
+    // left-right -> volume, run through an expo curve so the center isn't hyper-twitchy
+    const gRaw = (e.gamma - neutralGamma)/TILT_VOL;                    // -1..1 around neutral
+    gyroRaw = { v: clamp(expo(gRaw, VOL_EXPO)*0.5 + 0.5, 0, 1),
+                p: clamp((e.beta - neutralBeta)/(2*TILT_PITCH) + 0.5, 0, 1) };  // fwd-back -> pitch
+  }
+  // Called once per animation frame: smooths the recorded angles (One Euro — heavy at rest,
+  // so the sensor's steps melt into a glissando; light on fast sweeps, so it stays playable)
+  // and updates the audio at frame rate rather than at sensor rate.
+  // euroTilt* are built next to the hand-tracking filters further down; OneEuro is a hoisted
+  // function declaration, so the order is fine.
+  function tiltTick(t){
+    if(!gyroRaw || inputMode!=='gyro' || touchActive) return;
+    volNorm   = clamp(euroTiltV.filter(gyroRaw.v, t), 0, 1);
+    pitchNorm = clamp(euroTiltP.filter(gyroRaw.p, t), 0, 1);
+    updateAudio();
+  }
+  function calibrate(){
+    // take current position as neutral (pitch center, volume center)
+    if(lastOrient){ neutralGamma=lastOrient.gamma||0; neutralBeta=lastOrient.beta||45; }
+    // the neutral just moved, so the smoothed value has to jump with it instead of
+    // gliding over from wherever it was
+    euroTiltV.reset(); euroTiltP.reset();
+  }
+  let lastOrient=null;
+  function orientHandler(e){ lastOrient=e; onOrient(e); }
+
+  // ---------- Desktop fallback (mouse) ----------
+  function mouseHandler(e){
+    if(inputMode!=='gyro' || haveGyro || touchActive) return;
+    const r=stage.getBoundingClientRect();
+    volNorm   = clamp((e.clientX-r.left)/r.width, 0, 1);        // horizontal -> volume
+    pitchNorm = clamp(1 - (e.clientY-r.top)/r.height, 0, 1);    // vertical -> pitch
+    updateAudio();
+  }
+
+  // ---------- Finger on screen (overrides gyroscope) ----------
+  const stage = $('#stage');
+  function stageXY(e){
+    const r=stage.getBoundingClientRect();
+    volNorm   = clamp((e.clientX-r.left)/r.width, 0, 1);        // horizontal -> volume
+    pitchNorm = clamp(1 - (e.clientY-r.top)/r.height, 0, 1);    // vertical -> pitch
+    updateAudio();
+  }
+  stage.addEventListener('pointerdown', e=>{
+    if(!started) return;
+    if(!userPaused && ctx.state!=='running') ctx.resume().catch(()=>{});  // recover from an iOS interruption
+    touchActive = true;
+    try{ stage.setPointerCapture(e.pointerId); }catch(_){}
+    stageXY(e);
+  });
+  stage.addEventListener('pointermove', e=>{ if(touchActive) stageXY(e); });
+  function endTouch(){ touchActive = false; }
+  stage.addEventListener('pointerup', endTouch);
+  stage.addEventListener('pointercancel', endTouch);
+  stage.addEventListener('lostpointercapture', endTouch);
+  // Returning to the tab after the OS parked the audio -> bring the context back.
+  document.addEventListener('visibilitychange', ()=>{
+    if(!document.hidden && started && !userPaused && ctx && ctx.state!=='running') ctx.resume().catch(()=>{});
+  });
+
+  // ---------- Start ----------
+  async function start(){
+    if(started) return;
+
+    // iOS needs BOTH the audio unlock and the motion-permission request to be kicked
+    // off *inside* the tap gesture, BEFORE any await — otherwise Safari drops the
+    // transient user-activation and the gyroscope is silently denied. So we start
+    // resume() and requestPermission() synchronously here, then await them below.
+    buildAudio();
+    const resumeP = (ctx.state==='suspended') ? ctx.resume() : Promise.resolve();
+    let permP;
+    if(typeof DeviceOrientationEvent!=='undefined' &&
+       typeof DeviceOrientationEvent.requestPermission==='function'){
+      permP = DeviceOrientationEvent.requestPermission().catch(()=> 'error');  // iOS 13+
+    } else if(typeof DeviceOrientationEvent!=='undefined'){
+      permP = Promise.resolve('granted');
+    } else {
+      permP = Promise.resolve('unavailable');
+    }
+
+    await resumeP;
+    const gyroPerm = await permP;
+    started = true;
+
+    const gyroOk = (gyroPerm==='granted');
+    if(gyroOk){
+      window.addEventListener('deviceorientation', orientHandler, true);
+      // calibrate from the first reading shortly after start
+      setTimeout(()=>{ if(lastOrient) calibrate(); }, 400);
+    }
+    // Mouse is always attached: on desktop DeviceOrientationEvent exists but never
+    // fires (haveGyro stays false) -> the cursor drives. Once a real gyro reading
+    // arrives, mouseHandler silences itself.
+    window.addEventListener('mousemove', mouseHandler);
+    if(!gyroOk){
+      hintEl.textContent = (gyroPerm==='denied')
+        ? 'MOTION ACCESS OFF — ENABLE SETTINGS ▸ SAFARI ▸ MOTION & ORIENTATION ACCESS, THEN RELOAD'
+        : 'NO GYROSCOPE — CURSOR CONTROL (X: VOLUME, Y: PITCH)';
+    }
+
+    startEl.style.display='none';
+    setTimeout(()=>{ hintEl.style.opacity='0'; }, 4500);
+    drawLoop();
+  }
+
+  // ---------- Visualization (oscilloscope) ----------
+  let dpr=Math.min(window.devicePixelRatio||1, 2);
+  function resize(){
+    dpr=Math.min(window.devicePixelRatio||1,2);
+    canvas.width=stage.clientWidth*dpr; canvas.height=stage.clientHeight*dpr;
+  }
+  window.addEventListener('resize', resize); resize();
+
+  const buf = new Uint8Array(2048);
+  const trail = [];   // marker position history {t,x,y} for the echo ghost-trail
+  function drawLoop(){
+    requestAnimationFrame(drawLoop);
+    const W=canvas.width, H=canvas.height;
+    gc.clearRect(0,0,W,H);
+    if(!started) return;
+    tiltTick(performance.now()/1000);   // gyro -> audio runs here, not in the sensor callback
+
+    const hands2 = inputMode==='camera';              // no playfield frame in this mode
+    const fx0=FRAME*W, fy0=FRAME*H, fx1=(1-FRAME)*W, fy1=(1-FRAME)*H;
+    const fw=fx1-fx0, fh=fy1-fy0;
+    const frameCol = outOfBounds ? '#ff2a6d' : '#16f2e0';
+
+    // --- playfield frame + corner brackets (cyberpunk) ---
+    if(!hands2){
+      gc.lineWidth=Math.max(2,2*dpr);
+      gc.strokeStyle=frameCol; gc.shadowColor=frameCol; gc.shadowBlur=10*dpr;
+      gc.globalAlpha=0.5; gc.strokeRect(fx0,fy0,fw,fh); gc.globalAlpha=1;
+      const cl=Math.min(fw,fh)*0.06;
+      gc.lineWidth=Math.max(3,3*dpr);
+      gc.beginPath();
+      gc.moveTo(fx0,fy0+cl); gc.lineTo(fx0,fy0); gc.lineTo(fx0+cl,fy0);
+      gc.moveTo(fx1-cl,fy0); gc.lineTo(fx1,fy0); gc.lineTo(fx1,fy0+cl);
+      gc.moveTo(fx1,fy1-cl); gc.lineTo(fx1,fy1); gc.lineTo(fx1-cl,fy1);
+      gc.moveTo(fx0+cl,fy1); gc.lineTo(fx0,fy1); gc.lineTo(fx0,fy1-cl);
+      gc.stroke(); gc.shadowBlur=0;
+    }
+
+    // --- stabilized oscilloscope (rising zero-crossing trigger, ~3 periods) ---
+    analyser.getByteTimeDomainData(buf);
+    let win=Math.round(3*ctx.sampleRate/curFreq);   // ~3 cycles on screen
+    win=Math.max(220, Math.min(win, buf.length-2));
+    let s=0;                                          // trigger: first rising cross of mid (128)
+    for(let i=1;i<buf.length-win;i++){ if(buf[i-1]<128 && buf[i]>=128){ s=i; break; } }
+
+    const active = audible;   // true only when sound is actually playing (frame-aware)
+    // the coach steps aside as soon as the player actually makes a sound (but give the
+    // third step a few seconds of screen time first — it is the one nobody expects)
+    if(coachAt && active && Date.now()-coachAt > 6500) hideCoach();
+    // In hands mode the trace IS the string between the palms; otherwise it runs
+    // horizontally across the playfield as usual.
+    const pts = hands2 ? camHands.map(c=>{ const p=camToStage(c,W,H); p.r=c.sc*p.k*1.15; p.g=c.g; return p; }) : null;
+    let waveAmp = 0;
+    if(hands2){
+      waveAmp = drawHandWave(pts, W, H, s, win, active);
+    }else{
+      const amp=fh*0.34, midY=(fy0+fy1)/2;
+      gc.lineWidth=Math.max(2,2.6*dpr);
+      gc.strokeStyle='#b6ff2e'; gc.shadowColor='#b6ff2e'; gc.shadowBlur=active?10*dpr:0;
+      gc.globalAlpha=active?0.95:0.22;
+      gc.beginPath();
+      for(let j=0;j<win;j++){
+        const x=fx0 + j/(win-1)*fw;
+        const y=(buf[s+j]/128-1)*amp + midY;
+        j?gc.lineTo(x,y):gc.moveTo(x,y);
+      }
+      gc.stroke(); gc.shadowBlur=0; gc.globalAlpha=1;
+    }
+
+    // --- readout: the hand "string" (camera two-hand) OR the position marker ---
+    // In hands mode the marker sits at the midpoint between the palms: its height is the
+    // pitch, the distance between the palms is the volume.
+    let px, py;
+    if(hands2){
+      const mid = drawHandRig(pts,W,H,active,waveAmp);
+      if(!mid) return;                       // nothing (or one hand) in view -> no marker
+      px=mid.x; py=mid.y;
+    }else{
+      px=volNorm*W; py=(1-pitchNorm)*H;      // position marker (X=volume, Y=pitch)
+    }
+    const now = ctx ? ctx.currentTime : 0;
+
+    // reverb halo: a soft cyan glow that swells with volume (louder -> more wet send),
+    // and blooms wider as the player steps back — the same move that darkens the tone
+    // pushes more signal into the room, so "far away" is visible as well as audible.
+    if(reverbOn && active){
+      const wetK = hands2 ? 1 + PROX_WET*(1-camProx) : 1;
+      const rr=(30+volNorm*80)*dpr*wetK;
+      const g=gc.createRadialGradient(px,py,0,px,py,rr);
+      g.addColorStop(0,'rgba(22,242,224,'+(0.12*wetK).toFixed(3)+')'); g.addColorStop(1,'rgba(22,242,224,0)');
+      gc.fillStyle=g; gc.beginPath(); gc.arc(px,py,rr,0,7); gc.fill();
+    }
+
+    // echo ghost-trail: fading copies of the marker at multiples of DELAY_TIME,
+    // dimming by DELAY_FB each tap — reads instantly as "repeat with decay".
+    if(active) trail.push({t:now,x:px,y:py});
+    while(trail.length && now-trail[0].t > 4*DELAY_TIME+0.1) trail.shift();
+    if(delayOn){
+      const s=7*dpr;
+      gc.fillStyle='#16f2e0'; gc.shadowColor='#16f2e0';
+      for(let k=1;k<=4;k++){
+        const tt=now-k*DELAY_TIME;
+        let best=null, bd=1e9;
+        for(let i=trail.length-1;i>=0;i--){
+          const d=Math.abs(trail[i].t-tt);
+          if(d<bd){ bd=d; best=trail[i]; }
+          if(trail[i].t<tt-0.05) break;
+        }
+        if(!best || bd>0.06) continue;
+        gc.globalAlpha=0.55*Math.pow(DELAY_FB,k); gc.shadowBlur=8*dpr;
+        gc.fillRect(best.x-s/2,best.y-s/2,s,s);
+      }
+      gc.globalAlpha=1; gc.shadowBlur=0;
+    }
+
+    // soft disc + the crisp marker square (drawn on top of halo/ghosts)
+    gc.fillStyle= outOfBounds ? 'rgba(255,42,109,.16)' : 'rgba(22,242,224,.16)';
+    gc.beginPath(); gc.arc(px,py,18*dpr+volNorm*32*dpr,0,7); gc.fill();
+    const sq=9*dpr;
+    gc.fillStyle=frameCol; gc.shadowColor=frameCol; gc.shadowBlur=12*dpr;
+    gc.fillRect(px-sq/2,py-sq/2,sq,sq);
+    gc.shadowBlur=0;
+  }
+
+  // Landmark (0..1, already mirrored) -> canvas pixels, matching the preview's
+  // object-fit:cover so the overlay lands exactly on the hands in the video.
+  function camToStage(c,W,H){
+    const vw=video.videoWidth||W, vh=video.videoHeight||H;
+    const s=Math.max(W/vw, H/vh);
+    return { x:(W-vw*s)/2 + c.x*vw*s, y:(H-vh*s)/2 + c.y*vh*s, k:vh*s };  // k = px per unit Y
+  }
+  function tag(txt,x,y,col,size){
+    gc.save();
+    gc.textAlign='center'; gc.font='700 '+Math.round((size||12)*dpr)+'px "Courier New",monospace';
+    gc.fillStyle=col; gc.shadowColor=col; gc.shadowBlur=8*dpr; gc.globalAlpha=0.95;
+    gc.fillText(txt,x,y);
+    gc.restore();
+  }
+  // The oscilloscope trace, bent onto the hands: with two palms it's a string plucked
+  // between them (clamped at both ends, so it swings widest in the middle); with one palm
+  // it trails off toward the screen center, fading as it goes. Returns the swing scale so
+  // the labels can keep clear of it.
+  function drawHandWave(pts,W,H,s,win,active){
+    if(!pts.length) return 0;
+    const solo = pts.length<2;
+    const ax=pts[0].x, ay=pts[0].y;
+    const bx = solo ? W/2 : pts[1].x, by = solo ? H/2 : pts[1].y;
+    const dx=bx-ax, dy=by-ay, len=Math.hypot(dx,dy)||1;
+    const nx=-dy/len, ny=dx/len;                       // unit normal = the wave's swing axis
+    const amp=Math.min(len*0.28, H*0.20);
+    gc.save();
+    gc.lineWidth=Math.max(2,2.6*dpr); gc.lineJoin='round';
+    if(solo){                                          // fade out toward the screen center
+      const g=gc.createLinearGradient(ax,ay,bx,by);
+      g.addColorStop(0,'rgba(182,255,46,.95)'); g.addColorStop(1,'rgba(182,255,46,0)');
+      gc.strokeStyle=g; gc.globalAlpha=active?0.9:0.3;
+      gc.shadowColor='#b6ff2e'; gc.shadowBlur=active?8*dpr:0;   // same neon as the full string
+    }else{
+      gc.strokeStyle='#b6ff2e'; gc.shadowColor='#b6ff2e'; gc.shadowBlur=active?10*dpr:0;
+      gc.globalAlpha=active?0.95:0.22;
+    }
+    gc.beginPath();
+    for(let j=0;j<win;j++){
+      const u=j/(win-1);
+      const env = solo ? Math.pow(1-u,1.4) : Math.sin(Math.PI*u);   // decay away / clamped ends
+      const d=(buf[s+j]/128-1)*amp*env;
+      const x=ax+dx*u+nx*d, y=ay+dy*u+ny*d;
+      j?gc.lineTo(x,y):gc.moveTo(x,y);
+    }
+    gc.stroke();
+    gc.restore();
+    return amp;
+  }
+
+  // Camera two-hand overlay: the readout lives ON the hands instead of on edge meters —
+  // a "string" stretched between the palms. Its LENGTH is the volume, its HEIGHT is the
+  // pitch. Returns the string's midpoint (the marker anchor), or null if it can't play.
+  function drawHandRig(pts,W,H,active,waveAmp){
+    if(!pts.length){
+      tag('SHOW BOTH HANDS', W/2, H*0.62, '#16f2e0', 15);
+      return null;
+    }
+    const col = camHold ? '#ffb020' : (outOfBounds ? '#ff2a6d' : '#16f2e0');
+
+    // palm rings — proof that "the app sees this hand", pulsing with the volume
+    gc.save();
+    gc.strokeStyle=col; gc.shadowColor=col; gc.shadowBlur=12*dpr;
+    gc.lineWidth=Math.max(2,2.4*dpr);
+    for(const p of pts){
+      // p.g = the ring is being held from memory, not currently tracked: dashed and faint
+      // so it reads as "remembered", but still there — a ring blinking out on every fast
+      // move is what makes the tracking feel broken even when the sound survives.
+      gc.setLineDash(p.g?[5*dpr,6*dpr]:[]);
+      gc.globalAlpha=p.g?0.32:0.85; gc.beginPath(); gc.arc(p.x,p.y,p.r,0,7); gc.stroke();
+      gc.globalAlpha=(p.g?0.35:1)*(0.10+0.22*volNorm); gc.fillStyle=col;
+      gc.beginPath(); gc.arc(p.x,p.y,p.r,0,7); gc.fill();
+      if(p.g) tag('HOLD', p.x, p.y-p.r-10*dpr, '#ffb020', 11);
+    }
+    gc.setLineDash([]); gc.restore();
+
+    if(pts.length<2){                                  // one hand, nothing remembered
+      tag('HOLD', pts[0].x, pts[0].y-pts[0].r-10*dpr, '#ffb020', 12);
+      return null;
+    }
+
+    const a=pts[0], b=pts[1], mx=(a.x+b.x)/2, my=(a.y+b.y)/2;
+    gc.save();
+    // the chord the waveform is strung on — faint, just enough to read the span in silence
+    gc.strokeStyle=col; gc.shadowColor=col; gc.shadowBlur=(active?10:4)*dpr;
+    gc.globalAlpha=active?0.3:0.22;
+    gc.lineWidth=Math.max(1.5,(1+volNorm*3)*dpr);
+    gc.beginPath(); gc.moveTo(a.x,a.y); gc.lineTo(b.x,b.y); gc.stroke();
+    // pitch guide: a horizontal line at the string's height, across the screen
+    gc.setLineDash([6*dpr,9*dpr]); gc.lineWidth=Math.max(1,1.4*dpr);
+    gc.strokeStyle='#b6ff2e'; gc.shadowColor='#b6ff2e'; gc.shadowBlur=6*dpr; gc.globalAlpha=0.45;
+    gc.beginPath(); gc.moveTo(0,my); gc.lineTo(W,my); gc.stroke();
+    gc.restore();
+    // labels ride with the hands, pushed clear of the string's swing so the wave stays readable
+    const clr = (waveAmp||0)*volNorm + 18*dpr;
+    tag('VOL '+Math.round(volNorm*100)+'%', mx, my-clr, col, 12);
+    tag(active ? 'PITCH '+noteLabel(curFreq) : 'SILENT', mx, my+clr+10*dpr, active?'#b6ff2e':'#ff2a6d', 12);
+    // depth readout, dim on purpose: it is a background parameter, not something to aim at
+    tag('TONE '+Math.round(camProx*100)+'%', mx, my+clr+26*dpr, '#6f7f9a', 10);
+    // vibrato only shows up once the see-saw clears its dead zone — otherwise a permanent
+    // "VIB 0%" would read as a control that is broken rather than one that is at rest
+    if(handTilt>0.01) tag('VIB '+Math.round(handTilt*100)+'%', mx, my+clr+42*dpr, '#ff9ce0', 10);  // = --vib
+    return {x:mx, y:my};
+  }
+
+  // ---------- Camera / hand tracking (MediaPipe Hand Landmarker) ----------
+  // One Euro filter: low-lag smoothing for the noisy landmark stream. Low speed ->
+  // heavy smoothing (kills jitter); fast moves -> less lag (stays responsive).
+  function OneEuro(minCutoff, beta, dCutoff){
+    let xPrev=null, dxPrev=0, tPrev=0;
+    const alpha=(cut,dt)=>{ const r=2*Math.PI*cut*dt; return r/(r+1); };
+    return {
+      reset(){ xPrev=null; dxPrev=0; },
+      filter(x,t){                                   // t in seconds
+        if(xPrev===null){ xPrev=x; tPrev=t; return x; }
+        const dt=Math.max(1e-3, t-tPrev); tPrev=t;
+        const dx=(x-xPrev)/dt;
+        const aD=alpha(dCutoff,dt); dxPrev=aD*dx+(1-aD)*dxPrev;
+        const cut=minCutoff + beta*Math.abs(dxPrev);
+        const a=alpha(cut,dt); xPrev=a*x+(1-a)*xPrev;
+        return xPrev;
+      }
+    };
+  }
+  const euroX=OneEuro(1.7,0.03,1.0), euroY=OneEuro(1.7,0.03,1.0);
+  // Depth is filtered far harder than position: hand size is a noisy distance proxy (it
+  // also shrinks when a palm turns edge-on), and lag is harmless on a timbre parameter.
+  const euroProx=OneEuro(0.5,0.004,1.0);
+  // The palm see-saw angle: noisy (it is a ratio of two small differences) and it drives a
+  // background parameter, so it can afford to lag.
+  const euroTilt=OneEuro(1.0,0.02,1.0);
+  // Same filter, reused for the gyroscope's own axes — see tiltTick. Beta is high because
+  // the input is a normalized 0..1 position: a full sweep in a third of a second has to
+  // stay responsive, while a hand held still must not hear the sensor's quantization.
+  const euroTiltV=OneEuro(1.5,1.2,1.0), euroTiltP=OneEuro(1.5,1.2,1.0);
+
+  // Landmark distances must be aspect-corrected: x/y are normalized to frame width/height,
+  // so raw hypot() would stretch with the frame's aspect ratio.
+  function camAspect(){ return (video.videoWidth||16)/(video.videoHeight||9); }
+  function handScale(lm,ar){                          // wrist -> middle-MCP = one hand-length
+    return Math.hypot((lm[0].x-lm[9].x)*ar, lm[0].y-lm[9].y) || 1e-3;
+  }
+  async function initCamera(){
+    if(camReady) return true;
+    // Camera + WASM module need a secure context (https or localhost). Opened as a
+    // file:// page there's no camera API at all — say so plainly instead of a vague fail.
+    if(!window.isSecureContext || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){
+      hintShow('HANDS NEEDS HTTPS/LOCALHOST — OPEN VIA node serve-https.js (NOT file://)');
+      return false;
+    }
+    try{
+      hintShow(handLandmarker ? 'STARTING CAMERA…' : 'LOADING CAMERA + HAND MODEL…');
+      // Prefer the front camera at a light resolution; if that over-constrains (some
+      // webcams report no facingMode), retry with "any camera" before giving up.
+      // Frame rate is the anti-blur knob: a camera running at 60 fps cannot expose a frame
+      // for longer than ~16 ms, so a fast hand stays a hand instead of smearing into a
+      // streak the palm detector can't match. min:24 keeps a dim room from dropping to 15.
+      try{
+        camStream = await navigator.mediaDevices.getUserMedia({audio:false,
+          video:{facingMode:'user', width:{ideal:640}, height:{ideal:480},
+                 frameRate:{ideal:60, min:24}}});
+      }catch(e1){
+        camStream = await navigator.mediaDevices.getUserMedia({audio:false, video:true});
+      }
+      video.srcObject = camStream;
+      await video.play();
+      // MediaPipe tasks-vision loaded as an ES module straight from the CDN (self-hosted
+      // copies needed on prod — see CLAUDE.md CSP note before deploying this).
+      // Loaded once per page: stopCamera() releases the camera but deliberately keeps the
+      // landmarker, so flipping GYRO/HANDS back and forth doesn't re-download the model.
+      if(!handLandmarker){
+        const V = await import('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs');
+        const fileset = await V.FilesetResolver.forVisionTasks(
+          'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm');
+        const MODEL='https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task';
+        // Confidences well below the 0.5 defaults: for an instrument a momentary false
+        // positive is far cheaper than a dropped hand (which freezes/cuts the note).
+        const make = delegate => V.HandLandmarker.createFromOptions(fileset, {
+          baseOptions:{ delegate, modelAssetPath:MODEL }, runningMode:'VIDEO', numHands:2,
+          // Presence/tracking are looser than detection on purpose: they decide whether to
+        // KEEP a hand already found (cheap to be wrong, it self-corrects next frame), while
+        // detection decides whether to invent one (a phantom hand makes noise).
+        minHandDetectionConfidence:0.3, minHandPresenceConfidence:0.2, minTrackingConfidence:0.2 });
+        // GPU delegate often fails on desktop (WebGL quirks) — fall back to CPU.
+        try{ handLandmarker = await make('GPU'); }
+        catch(gpuErr){ console.warn('GPU delegate failed, trying CPU:', gpuErr); handLandmarker = await make('CPU'); }
+      }
+      camReady = true;
+      return true;
+    }catch(err){
+      console.error('HANDS init failed:', err);
+      const nm=err&&err.name;
+      // How many cameras does the browser actually see? Distinguishes "no device visible"
+      // (OS/permission/environment) from a constraint mismatch.
+      let cams='?';
+      try{ const ds=await navigator.mediaDevices.enumerateDevices();
+           cams=ds.filter(d=>d.kind==='videoinput').length; }catch(_){}
+      console.error('videoinput devices visible to the browser:', cams);
+      const msg = nm==='NotFoundError' ? ('NO CAMERA VISIBLE TO BROWSER (sees '+cams+') — CHECK OS/SITE CAMERA PERMISSION')
+                : nm==='NotAllowedError' ? 'CAMERA BLOCKED — ALLOW IT IN THE ADDRESS BAR'
+                : nm==='NotReadableError' ? 'CAMERA BUSY (CLOSE ZOOM/MEET/OTHER TAB)'
+                : ((err&&(err.message||err.name))||err);
+      hintShow('HANDS FAILED: '+msg+' — STAYING ON GYRO');
+      if(camStream){ camStream.getTracks().forEach(t=>t.stop()); camStream=null; }
+      return false;
+    }
+  }
+
+  // Leaving HANDS has to actually release the camera. Hiding the <video> only stops the
+  // player from seeing the preview — the tracks stay live, so the OS camera indicator
+  // keeps burning next to a UI that now says GYRO. That reads as "this page is still
+  // watching me", and it would be true. The landmarker is kept for a fast return.
+  function stopCamera(){
+    if(camRAF){ cancelAnimationFrame(camRAF); camRAF=0; }
+    if(camStream){ camStream.getTracks().forEach(t=>t.stop()); camStream=null; }
+    video.srcObject=null;
+    camReady=false;
+  }
+
+  function palmCenter(lm){                           // averaged palm point, x mirrored for display
+    let cx=0, cy=0;
+    for(const i of PALM_PTS){ cx+=lm[i].x; cy+=lm[i].y; }
+    cx/=PALM_PTS.length; cy/=PALM_PTS.length;
+    if(CAM_MIRROR) cx = 1-cx;
+    return {x:cx, y:cy};
+  }
+  function camLoop(){
+    camRAF = requestAnimationFrame(camLoop);
+    if(inputMode!=='camera' || !handLandmarker || touchActive) return;
+    if(video.readyState < 2) return;
+    let ts = Math.round(performance.now());
+    if(ts <= lastCamTs) ts = lastCamTs+1;           // timestamps must strictly increase
+    lastCamTs = ts;
+    let res; try{ res = handLandmarker.detectForVideo(video, ts); }catch(_){ return; }
+    const hands = res && res.landmarks;
+    const t = ts/1000;
+    if(!hands || !hands.length){                     // nothing in view -> silence
+      camHold=false; handLostAt=0; holdFade=1;
+      // Stepping away and coming back re-centres the depth range on the new spot; a
+      // one-frame dropout must not, or the tone would jump to mid-range for no reason.
+      if(!noHandsAt) noHandsAt=ts;
+      const gone = ts-noHandsAt;
+      if(gone > CAM_REF_MS) camRef=0;           // deliberately slower than the mute below
+      // Losing BOTH palms at once is usually the player leaving — but a fast wave can blur
+      // both for a few frames, and cutting instantly turns that into a click plus two rings
+      // popping off the screen. Bridge it on the short window before giving up.
+      if(lastGhosts && gone <= HAND_HOLD_EDGE_MS && !extraMute){
+        camHold=true;                            // paint the rig as held, not as tracked
+        camHands = lastGhosts.map(g=>({x:g.x, y:g.y, sc:g.sc, g:true}));
+        holdFade = clamp(1 - (gone-HAND_GRACE_MS)/(HAND_HOLD_EDGE_MS-HAND_GRACE_MS), 0, 1);
+      }else{
+        camHands=[]; lastPalms=null; lastGhosts=null;
+        if(!extraMute){ extraMute=true; euroX.reset(); euroY.reset(); euroTilt.reset(); handTilt=0; }
+      }
+      updateAudio(); return;
+    }
+    const ar = camAspect();
+    // Everything below is measured in ON-SCREEN pixels of #stage, not in raw frame
+    // coordinates: the preview is object-fit:cover, so a portrait phone crops the frame's
+    // sides while a laptop shows nearly all of it. Working in what the player actually
+    // SEES keeps the same gesture meaning the same thing on every screen and camera.
+    const W=canvas.width, H=canvas.height;
+    const hs = hands.map(lm=>{
+      const c=palmCenter(lm), p=camToStage(c,W,H), sc=handScale(lm,ar);
+      return {lm, c, sc, px:p.x, py:p.y, hp:sc*p.k};      // hp = hand-length in screen px
+    });
+    const pt = h=>({x:h.c.x, y:h.c.y, sc:h.sc});
+
+    // "Conductor": the gap between the palms is the volume (palms together = silence),
+    // their mean height is the pitch. Both hands are equal — nothing to memorize.
+    if(hs.length < 2){
+      // One hand lost. Volume needs both palms, so it freezes — but the pitch keeps
+      // following the hand we still see, shifted by the gap that hand had to the pair's
+      // mean height, fading out over the window chosen just below. A dropout of a few
+      // frames stays inaudible instead of freezing the note, and a real exit dies away.
+      camHold=true; camHands=[pt(hs[0])]; noHandsAt=0;
+      if(!handLostAt) handLostAt=ts;
+      const held = ts-handLostAt;
+      let hold = HAND_HOLD_EDGE_MS;
+      if(lastPalms){
+        const d=p=>Math.abs(p.x-hs[0].px)+Math.abs(p.y-hs[0].py);   // which palm is this one?
+        const i = d(lastPalms[0])<=d(lastPalms[1]) ? 0 : 1;
+        pitchNorm = clamp(1 - euroY.filter((hs[0].py + (lastMeanY-lastPalms[i].y))/H, t), 0, 1);
+        const stay = lastGhosts && lastGhosts[i], lost = lastGhosts && lastGhosts[1-i];
+        if(lost){
+          // Was the missing palm anywhere near an edge when we last saw it?
+          if(Math.min(lost.x, 1-lost.x, lost.y, 1-lost.y) > EDGE_MARGIN) hold = HAND_HOLD_GLITCH_MS;
+          // Keep its ring on screen, carried rigidly by the hand we still see. That is
+          // exactly what the audio does (pitch follows, the span/volume is frozen), so the
+          // picture and the sound never disagree about what is being held.
+          camHands.push({x:lost.x+(hs[0].c.x-stay.x), y:lost.y+(hs[0].c.y-stay.y), sc:lost.sc, g:true});
+        }
+      }
+      holdFade = clamp(1 - (held-HAND_GRACE_MS)/(hold-HAND_GRACE_MS), 0, 1);
+      if(held > hold) extraMute=true;
+      updateAudio(); return;
+    }
+    camHold=false; handLostAt=0; noHandsAt=0; extraMute=false; holdFade=1;
+    const A=hs[0], B=hs[1];
+    camHands=[pt(A), pt(B)];
+    lastPalms=[{x:A.px,y:A.py},{x:B.px,y:B.py}]; lastMeanY=(A.py+B.py)/2;
+    lastGhosts=[pt(A), pt(B)];               // same pair in frame coords, indexed alike
+    // Volume: how far apart the palms are on screen. The silent end stays tied to hand
+    // size (touching palms are ~SEP_MIN hand-lengths apart at any distance from the
+    // camera); the loud end is a share of the visible stage width, so "arms wide" means
+    // the edges of what you see. The guard keeps a usable span when hands look huge.
+    const minPx = SEP_MIN*(A.hp+B.hp)/2;
+    const maxPx = Math.max(minPx*2.2, SEP_SPAN*W);
+    const sepPx = Math.hypot(A.px-B.px, A.py-B.py);
+    volNorm   = clamp(euroX.filter(clamp((sepPx-minPx)/(maxPx-minPx),0,1), t), 0, 1);
+    pitchNorm = clamp(1 - euroY.filter((A.py+B.py)/2/H, t), 0, 1);   // hands up -> higher
+    // See-saw -> vibrato. Only read while the palms are far enough apart to be making a
+    // sound: near the silent end the angle between two nearly-touching points is mostly
+    // noise, and it would arrive as a burst of vibrato the moment the hands opened.
+    // |dx| folds the two hands into one measurement: which palm is higher doesn't matter,
+    // only how far the line is off horizontal (0..90 degrees).
+    const tiltDeg = sepPx > minPx*1.35
+      ? Math.abs(Math.atan2(A.py-B.py, Math.abs(A.px-B.px))*180/Math.PI) : 0;
+    handTilt = clamp(euroTilt.filter(
+      clamp((tiltDeg-TILT_DEAD)/(TILT_FULL-TILT_DEAD),0,1), t), 0, 1);
+    // Depth from the mean of both hand sizes: averaging halves the error when one palm
+    // tilts edge-on (which shrinks it without the player having moved anywhere). The
+    // reference is whatever distance the hands turned up at, so the sweep always lands
+    // around where the player actually stands; it is NOT re-learned while playing, or the
+    // timbre would drift on its own whenever someone held a pose.
+    const scMean = (A.sc+B.sc)/2;
+    if(!camRef) camRef = scMean;
+    const distR = camRef/scMean;             // apparent size is 1/distance, so this is the ratio
+    const pRaw = 1 - (distR-PROX_NEAR_R)/(PROX_FAR_R-PROX_NEAR_R);
+    camProx = clamp(euroProx.filter(clamp(pRaw,0,1), t), 0, 1);
+    updateAudio();
+  }
+
+  function setModeButtons(mode){
+    document.querySelectorAll('#inputSeg button').forEach(b=>
+      b.classList.toggle('active', b.dataset.in===mode));
+  }
+  async function setInputMode(mode){
+    if(mode===inputMode) return;
+    if(mode==='camera'){
+      const ok = await initCamera();
+      if(!ok){ setModeButtons('gyro'); return; }
+      inputMode='camera'; extraMute=true; lastCamTs=0;   // silent until hands show up
+      camHands=[]; camHold=false; handLostAt=0; lastPalms=null; holdFade=1;
+      camProx=1; camRef=0; noHandsAt=0; euroProx.reset();
+      calBtn.style.display='none';                       // nothing to calibrate with hands
+      // the see-saw owns the vibrato here, so the button stops being a button
+      handTilt=0; euroTilt.reset();
+      fxVib.classList.remove('active'); fxVib.classList.add('locked');
+      fxVib.textContent='∿ VIB ← TILT';
+      euroX.reset(); euroY.reset();
+      video.classList.add('on');
+      if(!camRAF) camLoop();
+      hintShow(HANDS_HINT);
+      setTimeout(()=>{ if(inputMode==='camera') hintEl.style.opacity='0'; }, 6000);
+      if(!coachSeen()) showCoach();
+    }else{
+      inputMode='gyro'; extraMute=false;
+      camProx=1; camRef=0; euroProx.reset();   // no depth outside hands mode -> tone opens back up
+      hideCoach();
+      calBtn.style.display='';
+      // hand back the vibrato to its button, in whatever state the player left it
+      handTilt=0;
+      fxVib.classList.remove('locked'); fxVib.textContent='∿ VIB';
+      fxVib.classList.toggle('active', vibratoOn);
+      setFx('vibrato', vibratoOn);
+      euroTiltV.reset(); euroTiltP.reset();   // gyro angles resume from where the phone is
+      video.classList.remove('on');
+      stopCamera();
+      hintShow(haveGyro ? 'GYRO MODE · TILT ↔ VOLUME · ↕ PITCH' : 'CURSOR MODE · MOVE THE MOUSE');
+      setTimeout(()=>{ hintEl.style.opacity='0'; }, 4000);
+    }
+    setModeButtons(inputMode);
+  }
+
+  // ---------- Recording ----------
+  function pickMime(){
+    const cands=['audio/webm;codecs=opus','audio/webm','audio/mp4','audio/ogg;codecs=opus'];
+    for(const m of cands){ if(window.MediaRecorder && MediaRecorder.isTypeSupported(m)) return m; }
+    return '';
+  }
+  function toggleRec(){
+    if(!started) return;
+    if(recorder && recorder.state==='recording'){ recorder.stop(); return; }
+    const mime=pickMime();
+    try{ recorder = mime ? new MediaRecorder(streamDest.stream,{mimeType:mime})
+                         : new MediaRecorder(streamDest.stream); }
+    catch(err){ alert('Recording is not supported by this browser'); return; }
+    recChunks=[];
+    recorder.ondataavailable=e=>{ if(e.data.size) recChunks.push(e.data); };
+    recorder.onstop=()=>{
+      const type=recorder.mimeType||mime||'audio/webm';
+      const blob=new Blob(recChunks,{type});
+      const ext=type.includes('mp4')?'m4a':type.includes('ogg')?'ogg':'webm';
+      const a=document.createElement('a');
+      a.href=URL.createObjectURL(blob);
+      a.download='theremin-'+new Date().toISOString().slice(0,19).replace(/[:T]/g,'-')+'.'+ext;
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(()=>URL.revokeObjectURL(a.href), 4000);
+      recBtn.classList.remove('recording'); recBtn.textContent='● REC';
+      recDot.classList.remove('on'); clearInterval(recTimer);
+    };
+    recorder.start();
+    recStart=Date.now();
+    recBtn.classList.add('recording'); recBtn.textContent='■ STOP REC';
+    recDot.classList.add('on');
+    recTimer=setInterval(()=>{
+      const s=Math.floor((Date.now()-recStart)/1000);
+      recTimeEl.textContent=Math.floor(s/60)+':'+String(s%60).padStart(2,'0');
+    },250);
+  }
+  if(!window.MediaRecorder){ recBtn.style.display='none'; }
+
+  // ---------- UI events ----------
+  startBtn.addEventListener('click', start);
+
+  // Input source switch (gyro <-> camera hands)
+  document.querySelectorAll('#inputSeg button').forEach(b=>{
+    b.addEventListener('click',()=>{
+      if(!started){ flash('#calibrateBtn','PRESS START'); return; }
+      // tapping HANDS while already in hands mode replays the gesture coach
+      if(b.dataset.in==='camera' && inputMode==='camera'){ showCoach(); return; }
+      setInputMode(b.dataset.in);
+    });
+  });
+
+  document.querySelectorAll('#waveSeg button').forEach(b=>{
+    b.addEventListener('click',()=>{
+      document.querySelectorAll('#waveSeg button').forEach(x=>x.classList.remove('active'));
+      b.classList.add('active'); wave=b.dataset.w; applyWave();
+    });
+  });
+
+  $('#reverbToggle').addEventListener('click',function(){
+    reverbOn=!reverbOn; this.classList.toggle('on',reverbOn);
+    if(wetGain){
+      wetGain.gain.setTargetAtTime(reverbOn?REV_WET:0, ctx.currentTime, 0.05);
+      dryGain.gain.setTargetAtTime(reverbOn?REV_DRY:1, ctx.currentTime, 0.05);
+    }
+  });
+
+  $('#snapToggle').addEventListener('click',function(){
+    snapOn=!snapOn; this.classList.toggle('on',snapOn);
+  });
+
+  // FX toggles (vibrato / tremolo / echo) — light up like the wave segment
+  function setFx(fx,on){
+    if(fx==='vibrato'){ vibratoOn=on;
+      if(vibDepth) vibDepth.gain.setTargetAtTime(on?VIB_DEPTH:0, ctx.currentTime, 0.05); }
+    else if(fx==='tremolo'){ tremoloOn=on;
+      if(tremGain){ tremGain.gain.setTargetAtTime(on?1-TREM_DEPTH:1, ctx.currentTime, 0.05);
+                    tremDepth.gain.setTargetAtTime(on?TREM_DEPTH:0, ctx.currentTime, 0.05); } }
+    else if(fx==='delay'){ delayOn=on;
+      if(delayWet) delayWet.gain.setTargetAtTime(on?DELAY_WET:0, ctx.currentTime, 0.05); }
+  }
+  document.querySelectorAll('#fxSeg button').forEach(b=>{
+    b.addEventListener('click',()=>{
+      const on=!b.classList.contains('active');
+      b.classList.toggle('active',on);
+      setFx(b.dataset.fx,on);
+    });
+  });
+
+  calBtn.addEventListener('click',()=>{          // hidden in camera mode — nothing to zero
+    if(haveGyro){ calibrate(); flash('#calibrateBtn','◎ OK'); }
+    else flash('#calibrateBtn','NO GYRO');
+  });
+  function flash(sel,txt){ const el=$(sel); const o=el.textContent; el.textContent=txt; setTimeout(()=>el.textContent=o,1200); }
+
+  recBtn.addEventListener('click', toggleRec);
+  $('#stopBtn').addEventListener('click',()=>{
+    if(!ctx) return;
+    // Drive this from our own flag, not from ctx.state — the context can be parked by
+    // the OS at any moment, and then the button would silently mean the opposite thing.
+    userPaused = !userPaused;
+    if(userPaused){ ctx.suspend(); $('#stopBtn').textContent='▶ PLAY'; }
+    else{ ctx.resume(); $('#stopBtn').textContent='❚❚ PAUSE'; }
+  });
+
+  // Protocol note on the boot screen
+  if(location.protocol!=='https:' && location.hostname!=='localhost' && location.hostname!=='127.0.0.1'){
+    startNote.textContent='⚠ GYROSCOPE NEEDS HTTPS — CURSOR CONTROL WILL BE USED INSTEAD.';
+  }
+})();
+</script>
+</body>
+</html>

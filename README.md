@@ -35,7 +35,7 @@ Hand tracking runs entirely on your own machine and **no video is uploaded anywh
 - Audio recording → file download (webm/opus, or mp4 on iOS).
 - Desktop fallback: no gyroscope means mouse control.
 
-The range is **C2–C7**, five octaves. Phone speakers cannot physically reproduce anything below ~150 Hz, so the low end is handled by a psychoacoustic bass exciter rather than by gain: the bottom octave is saturated to generate harmonics and its fundamental is then filtered out, letting the ear reconstruct the missing fundamental. Bass reads as present and in tune even on a tiny speaker.
+The range is **C2–C7**, five octaves. Phone speakers cannot physically reproduce anything below ~150 Hz, so the low end is handled by a psychoacoustic bass exciter rather than by gain: the bottom octave is saturated to generate harmonics and its fundamental is then filtered out, letting the ear reconstruct the missing fundamental. Bass reads as present and in tune even on a tiny speaker. The saturator is driven from the bare oscillator rather than from the post-volume signal, so it produces the same harmonics however loudly you play, and the filter that removes the fundamental tracks the note instead of sitting at a fixed corner.
 
 ## Requirements: HTTPS
 

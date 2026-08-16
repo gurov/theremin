@@ -334,6 +334,14 @@
   // drift on by itself — the same failure that got finger-spread control removed.
   const TILT_DEAD = 12, TILT_FULL = 46;   // degrees: silent below, full depth above
   const VIB_HAND_MAX = 55;                // cents of detune at a full see-saw
+  // Bass exciter (see makeBassCurve and the graph). The shaper is fed the bare oscillator,
+  // whose amplitude is always 1, so the amount of saturation — and therefore the harmonics
+  // that stand in for the missing fundamental — no longer depends on how loud the player
+  // happens to be playing. BASS_K sets how hard it saturates, BASS_GAIN the level.
+  const BASS_K = 6, BASS_GAIN = 3;
+  const BASS_LP_HZ = 170;                 // which notes get treated at all
+  const BASS_HP_MULT = 2.0;               // highpass corner, in multiples of the played note
+  const BASS_HP_MIN = 120, BASS_HP_MAX = 340;
 
   // ---------- State ----------
   let ctx, osc, volGain, tremGain, dryGain, wetGain, convolver, preDelay, wetFilter, toneFilter, mixBus, limiter, analyser, streamDest;
@@ -492,12 +500,28 @@
     // harmonics via soft saturation, then drop the (phone-inaudible) fundamental. The
     // ear reconstructs the "missing fundamental", so bass reads as present + in-tune
     // even though a tiny speaker can't move enough air to sound the note itself.
-    bassLP = ctx.createBiquadFilter();   bassLP.type='lowpass';  bassLP.frequency.value=170; bassLP.Q.value=0.4;
+    bassLP = ctx.createBiquadFilter();   bassLP.type='lowpass';  bassLP.frequency.value=BASS_LP_HZ; bassLP.Q.value=0.4;
     bassShaper = ctx.createWaveShaper();  bassShaper.curve=makeBassCurve(); bassShaper.oversample='4x';
-    bassHP = ctx.createBiquadFilter();   bassHP.type='highpass'; bassHP.frequency.value=120; bassHP.Q.value=0.5;
-    bassGain = ctx.createGain();         bassGain.gain.value=0.7;
+    // The highpass TRACKS the note (applyBass): it has to sit above whatever fundamental is
+    // playing, or the exciter hands that fundamental straight back to the mix and becomes a
+    // plain EQ bump. A fixed 120 Hz corner overlapped bassLP's 170 Hz one, so every note
+    // between them got boosted rather than excited — an audible hump around C3. tanh is an
+    // odd function and makes no 2nd harmonic, so the corner can sit at 2x the note without
+    // costing anything: it kills the fundamental hard and still passes 3f and up.
+    bassHP = ctx.createBiquadFilter();   bassHP.type='highpass'; bassHP.frequency.value=BASS_HP_MIN; bassHP.Q.value=0.5;
+    bassGain = ctx.createGain();         bassGain.gain.value=BASS_GAIN;
 
-    // osc -> vol -> trem -> tone -> (dry + reverb + echo + bass) -> mix -> limiter -> analyser -> out + recording
+    // osc (+ bass exciter) -> vol -> trem -> tone -> (dry + reverb + echo) -> mix -> limiter
+    //   -> analyser -> out + recording
+    // The exciter is tapped off the RAW oscillator and rejoins before volGain, which is the
+    // whole point: driven from a constant-amplitude source it always saturates by the same
+    // amount, so the fake bass sounds the same at every volume. Fed from after the volume
+    // (as it used to be) the drive swung over 40 dB, and below about two thirds of the
+    // volume range the shaper never left its linear region — it produced no harmonics at
+    // all and degenerated into a band boost. Rejoining here also means the harmonics get
+    // the volume curve, the tremolo, the depth filter, the reverb and the echo like any
+    // other part of the tone, instead of sitting dry against a reverberant mid-range.
+    osc.connect(bassLP).connect(bassShaper).connect(bassHP).connect(bassGain).connect(volGain);
     osc.connect(volGain);
     volGain.connect(tremGain);
     tremGain.connect(toneFilter);
@@ -506,7 +530,6 @@
     toneFilter.connect(delay);
     delay.connect(delayFb).connect(delay);         // feedback loop
     delay.connect(delayWet).connect(mixBus);
-    toneFilter.connect(bassLP).connect(bassShaper).connect(bassHP).connect(bassGain).connect(mixBus);  // bass exciter
     vibLfo.connect(vibDepth).connect(osc.detune);  // vibrato -> pitch
     tremLfo.connect(tremDepth).connect(tremGain.gain);  // tremolo -> gain
     mixBus.connect(limiter);
@@ -539,9 +562,15 @@
   // Soft-saturation curve for the bass exciter: tanh adds warm low-order harmonics
   // (3rd, 5th...) rather than the harsh high-order fizz a hard clip would. 4x
   // oversampling on the node keeps it alias-free (no digital buzz).
+  // Saturation curve for the bass exciter. Normalised by k rather than by tanh(k), so the
+  // slope at the origin is exactly 1: the shaper is a pure saturator (transparent while the
+  // signal is small, compressing as it grows) instead of also being a gain stage. The old
+  // tanh(kx)/tanh(k) had a slope of k/tanh(k) = 2.44, i.e. a hidden +7.7 dB on quiet
+  // signals, which is what made the low end bulge. Peak output is tanh(k)/k; BASS_GAIN
+  // makes that back up.
   function makeBassCurve(){
-    const n=1024, c=new Float32Array(n), k=2.4;
-    for(let i=0;i<n;i++){ const x=i/(n-1)*2-1; c[i]=Math.tanh(k*x)/Math.tanh(k); }
+    const n=1024, c=new Float32Array(n), k=BASS_K;
+    for(let i=0;i<n;i++){ const x=i/(n-1)*2-1; c[i]=Math.tanh(k*x)/k; }
     return c;
   }
 
@@ -630,12 +659,22 @@
     osc.frequency.setTargetAtTime(f, ctx.currentTime, fTc);
     volGain.gain.setTargetAtTime(g, ctx.currentTime, gTc);
     applyDepth(f);
+    applyBass(f);
     // In hands mode the see-saw of the palms owns the vibrato depth and the FX button is
     // locked out; everywhere else the button owns it (setFx restores that on the way out).
     if(inputMode==='camera' && vibDepth)
       vibDepth.gain.setTargetAtTime(handTilt*VIB_HAND_MAX, ctx.currentTime, 0.07);
     noteEl.textContent = g>0 ? noteLabel(f) : '—';
     freqEl.textContent = Math.round(f)+' HZ';
+  }
+
+  // Keep the exciter's highpass just above the note being played, so what reaches the mix is
+  // only the harmonics it generated and never the fundamental it was given. Smoothed like
+  // the depth filter — retuning a biquad in one step clicks.
+  function applyBass(f){
+    if(!bassHP) return;
+    const hp = clamp(f*BASS_HP_MULT, BASS_HP_MIN, BASS_HP_MAX);
+    bassHP.frequency.setTargetAtTime(hp, ctx.currentTime, 0.05);
   }
 
   // Depth -> distance. The low-pass floor is tied to the note being played, not to a fixed

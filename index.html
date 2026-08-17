@@ -82,13 +82,17 @@
   #coach .ul{margin-left:-72px; animation:lift 2.6s ease-in-out infinite;}
   #coach .ur{margin-left: 40px; animation:lift 2.6s ease-in-out infinite;}
   /* the see-saw: the hands stay level on average (so the note holds) and only the ANGLE
-     between them changes — which is exactly what drives the vibrato */
+     between them changes — which is exactly what drives the vibrato. The second hand needs
+     its own INVERTED keyframes, not `animation-direction:reverse` on `lift`: that keyframe
+     is a palindrome in time (11 -> -11 -> 11), so playing it backwards is identical to
+     playing it forwards and both hands rose and fell together — no tilt to see at all. */
   #coach .wl{margin-left:-72px; animation:lift 2.2s ease-in-out infinite;}
-  #coach .wr{margin-left: 40px; animation:lift 2.2s ease-in-out infinite reverse;}
+  #coach .wr{margin-left: 40px; animation:dip  2.2s ease-in-out infinite;}
   /* "together" = palms touching (not overlapping), "apart" = arms wide */
   @keyframes spreadL{0%,100%{transform:translateX(38px);} 50%{transform:translateX(-34px);}}
   @keyframes spreadR{0%,100%{transform:translateX(-38px);} 50%{transform:translateX(34px);}}
   @keyframes lift{0%,100%{transform:translateY(11px);} 50%{transform:translateY(-11px);}}
+  @keyframes dip {0%,100%{transform:translateY(-11px);} 50%{transform:translateY(11px);}}
   #coach .clabel{font-size:clamp(11px,3.4vw,14px); letter-spacing:2px; color:var(--neon);}
   #coach .csub{font-size:10px; letter-spacing:1px; color:var(--muted);}
   #coach .ctap{font-size:11px; letter-spacing:2px; color:var(--neon2); animation:blink 1.6s steps(2,start) infinite;}
@@ -279,7 +283,7 @@
 
 <div id="start">
   <h1>▛ AIR·THEREMIN ▜</h1>
-  <p>Play it in mid-air, two ways. <b>GYRO</b> — tilt your phone: left-right sets volume, forward-back sets pitch, and the whole range lives inside the frame (tilt the marker outside it to cut the sound). <b>HANDS</b> — wave both hands at the camera: spread them apart for volume, raise them for pitch, lean back to soften the tone, put your palms together for silence. Hold the device steady and press START — it calibrates to your current grip.</p>
+  <p>Play it in mid-air, two ways. <b>HANDS</b> — wave both hands at the camera: spread them apart for volume, raise them for pitch, lean back to soften the tone, put your palms together for silence. A laptop webcam does just as well as a phone. <b>GYRO</b> — on a phone, tilt it instead: left-right sets volume, forward-back sets pitch, and the whole range lives inside the frame (tilt the marker outside it to cut the sound). With neither sensor nor camera, the mouse drives it. Press START — on a phone, hold it steady and it calibrates to your grip.</p>
   <button class="bigbtn" id="startBtn">▶ START</button>
   <div id="startNote"></div>
   <div id="credit">
@@ -326,12 +330,14 @@
   const VIB_RATE = 5.2, VIB_DEPTH = 28;         // vibrato: Hz, cents of detune sweep
   const TREM_RATE = 6.0, TREM_DEPTH = 0.35;     // tremolo: Hz, gain-modulation amplitude
   const DELAY_TIME = 0.28, DELAY_FB = 0.38, DELAY_WET = 0.5;  // echo: s, feedback, wet mix
-  // HANDS: two palms give exactly three independent numbers, and only two were being read.
-  // Mean height is the pitch, the gap between them is the volume, and the ANGLE of the line
-  // joining them was free — see-saw the hands and the note gains vibrato. The angle is
-  // rotation-invariant with respect to the gap, so it doesn't disturb the volume. The dead
-  // zone matters: nobody holds two hands exactly level, and without it the vibrato would
-  // drift on by itself — the same failure that got finger-spread control removed.
+  // HANDS: two palms are four numbers, three of them playable. Mean height is the pitch,
+  // the gap between them is the volume, and the ANGLE of the line joining them sat free —
+  // see-saw the hands and the note gains vibrato. (The fourth, where the pair sits
+  // horizontally, stays unused on purpose: reading it would pin the player to one spot in
+  // the frame. Apparent hand size is a fifth channel, and it drives the depth axis below.)
+  // The angle is rotation-invariant with respect to the gap, so it doesn't disturb the
+  // volume. The dead zone matters: nobody holds two hands exactly level, and without it the
+  // vibrato would drift on by itself — the same failure that got finger-spread removed.
   const TILT_DEAD = 12, TILT_FULL = 46;   // degrees: silent below, full depth above
   const VIB_HAND_MAX = 55;                // cents of detune at a full see-saw
   // Bass exciter (see makeBassCurve and the graph). The shaper is fed the bare oscillator,
@@ -433,6 +439,7 @@
   const video=$('#cam');
   function hintShow(txt){ hintEl.textContent=txt; hintEl.style.opacity='1'; }
   const HANDS_HINT = 'HANDS · SPREAD ↔ VOLUME · RAISE ↕ PITCH · TILT = VIBRATO · LEAN BACK = DARKER · PALMS TOGETHER = SILENCE';
+  const CURSOR_HINT = 'NO GYROSCOPE — CURSOR CONTROL (X: VOLUME, Y: PITCH) · OR PRESS ◉ HANDS';
 
   // ---------- Gesture coach (animated diagram over the stage) ----------
   // Shown on the first entry into HANDS of every VISIT, not once per browser. Nobody
@@ -801,8 +808,16 @@
     if(!gyroOk){
       hintEl.textContent = (gyroPerm==='denied')
         ? 'MOTION ACCESS OFF — ENABLE SETTINGS ▸ SAFARI ▸ MOTION & ORIENTATION ACCESS, THEN RELOAD'
-        : 'NO GYROSCOPE — CURSOR CONTROL (X: VOLUME, Y: PITCH)';
+        : CURSOR_HINT;
     }
+    // A 'granted' above does NOT mean there is a sensor. Every desktop browser DEFINES
+    // DeviceOrientationEvent and then never fires it, so a laptop takes the granted path
+    // and keeps the default "tilt your phone" hint on screen for somebody holding a mouse.
+    // The only honest test is whether a reading ever arrives: wait a beat, and if none did,
+    // say what actually drives this machine.
+    if(gyroOk) setTimeout(()=>{
+      if(!haveGyro && inputMode==='gyro') hintEl.textContent = CURSOR_HINT;
+    }, 700);
 
     startEl.style.display='none';
     setTimeout(()=>{ hintEl.style.opacity='0'; }, 4500);
@@ -1008,8 +1023,14 @@
     }
     gc.setLineDash([]); gc.restore();
 
-    if(pts.length<2){                                  // one hand, nothing remembered
-      tag('HOLD', pts[0].x, pts[0].y-pts[0].r-10*dpr, '#ffb020', 12);
+    if(pts.length<2){
+      // One hand and no memory of a pair — which is exactly what a first-time player
+      // produces, because raising one hand is the most natural thing to try. A lone
+      // orange HOLD over a silent instrument tells them nothing; say what is missing.
+      // (Losing one hand out of a working pair never lands here: the vanished palm is
+      // still drawn from memory, so pts holds two.)
+      if(extraMute) tag('SHOW BOTH HANDS', W/2, H*0.62, '#16f2e0', 15);
+      else tag('HOLD', pts[0].x, pts[0].y-pts[0].r-10*dpr, '#ffb020', 12);
       return null;
     }
 
@@ -1269,8 +1290,19 @@
     document.querySelectorAll('#inputSeg button').forEach(b=>
       b.classList.toggle('active', b.dataset.in===mode));
   }
+  // Guarded against re-entry: inputMode only flips AFTER initCamera() resolves, and the
+  // first entry into HANDS sits there for as long as an 8 MB model takes to arrive — so a
+  // second, impatient tap used to sail past every check and open the camera twice. The
+  // stream from the first call was then overwritten and never stopped: its tracks stayed
+  // live and the OS camera light stayed on.
+  let switchingInput = false;
   async function setInputMode(mode){
-    if(mode===inputMode) return;
+    if(mode===inputMode || switchingInput) return;
+    switchingInput = true;
+    try{ await applyInputMode(mode); }
+    finally{ switchingInput = false; }
+  }
+  async function applyInputMode(mode){
     if(mode==='camera'){
       const ok = await initCamera();
       if(!ok){ setModeButtons('gyro'); return; }
@@ -1413,7 +1445,7 @@
 
   // Protocol note on the boot screen
   if(location.protocol!=='https:' && location.hostname!=='localhost' && location.hostname!=='127.0.0.1'){
-    startNote.textContent='⚠ GYROSCOPE NEEDS HTTPS — CURSOR CONTROL WILL BE USED INSTEAD.';
+    startNote.textContent='⚠ GYROSCOPE AND CAMERA BOTH NEED HTTPS — CURSOR CONTROL WILL BE USED INSTEAD.';
   }
 })();
 </script>

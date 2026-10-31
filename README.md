@@ -22,7 +22,7 @@ The full range lives inside the on-screen frame; move the marker outside it and 
 
 Two palms give exactly three independent numbers — their mean height, the gap between them and the angle joining them — and the mapping above is those three. Both hands are equal, so there are no left/right roles to memorise. This mode has no frame: the hands bound the range themselves. A three-step animated coach appears the first time you switch to it in a visit.
 
-Hand tracking runs entirely on your own machine and **no video is uploaded anywhere** — there is no server to upload it to. The MediaPipe module, its wasm and the model file are fetched from a CDN once; see [Hosting](#hosting) for vendoring them locally.
+Hand tracking runs entirely on your own device — MediaPipe compiled to WebAssembly, on your GPU (or the CPU if WebGL won't cooperate) — and **no video leaves your machine**. What does go over the network is the tracker itself: an ES module and wasm from `cdn.jsdelivr.net` and the model from `storage.googleapis.com`, about 10 MB in all, fetched once when you first switch to HANDS. After that you can unplug the network and the instrument still plays. See [Hosting](#hosting) for vendoring those files locally.
 
 ## Features
 
